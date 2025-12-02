@@ -1,0 +1,259 @@
+<!DOCTYPE html>
+<html lang="fi">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>IV-Master Pro V80</title>
+    
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.5.31/jspdf.plugin.autotable.min.js"></script>
+
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div class="header">
+        <button class="back-btn" id="backBtn">←</button>
+        <h1>IV-Master Pro V80</h1>
+    </div>
+
+    <!-- PROJECTS VIEW -->
+    <div class="view active" id="view-projects">
+        <div style="padding: 20px;">
+            <button class="btn btn-primary" onclick="showNewProjectModal()">+ Uusi projekti</button>
+            <button class="btn btn-demo" onclick="createDemoProject()">📋 Lataa demo</button>
+            <div id="noProjectsMsg" style="text-align: center; color: #999; margin-top: 40px;">Ei projekteja. Luo uusi!</div>
+            <div id="projectsList"></div>
+        </div>
+    </div>
+
+    <!-- DETAILS VIEW -->
+    <div class="view" id="view-details">
+        <div style="padding: 15px;">
+            <h3 id="currentProjectName">Projekti</h3>
+            <div class="mode-selector" id="modeSelector">
+                <button class="mode-btn active" id="btnModeHome" onclick="setMode('home')">Home</button>
+                <button class="mode-btn" id="btnModeAway" onclick="setMode('away')">Away</button>
+                <button class="mode-btn" id="btnModeBoost" onclick="setMode('boost')">Boost</button>
+            </div>
+            
+            <h4>IV-Koneet</h4>
+            <div id="machineList"></div>
+            <button class="btn btn-secondary" onclick="showAddMachine()">+ Kone</button>
+            
+            <h4 style="margin-top: 20px;">Runkokanavat</h4>
+            <div id="ductList"></div>
+            <button class="btn btn-secondary" onclick="showAddDuct()">+ Runko</button>
+            
+            <h4 style="margin-top: 20px;">Venttiilit</h4>
+            <div id="valveList"></div>
+            <button class="btn btn-success" onclick="showAddValve()">+ Mittaus</button>
+            
+            <button class="btn btn-primary" onclick="showVisual()" style="margin-top: 20px;">📊 Näytä kaavio</button>
+            <button class="btn btn-secondary" onclick="showBalance()" style="margin-top: 10px;">⚖️ Tasapaino</button>
+            <button class="btn btn-secondary" onclick="optimizeEnergy()" style="margin-top: 10px;">⚡ Optimoi</button>
+            <button class="btn btn-secondary" onclick="exportReport()" style="margin-top: 10px;">📄 Raportti</button>
+            <button class="btn btn-secondary" onclick="showSettings()" style="margin-top: 10px;">⚙️ Asetukset</button>
+            <button class="btn btn-danger" onclick="deleteCurrentProject()" style="margin-top: 10px;">🗑️ Poista projekti</button>
+            <div id="sfpDisplay" style="margin-top: 20px; padding: 10px; background: #f0f0f0; border-radius: 8px; font-weight: bold;"></div>
+        </div>
+    </div>
+
+    <!-- VISUAL/SCHEMATIC VIEW -->
+    <div class="view" id="view-visual">
+        <div id="schematicRoot" class="schematic-container">
+            <canvas id="pipeCanvas"></canvas>
+            <div class="machine-unit" id="visMachine" onclick="editMachineFromVisual()">
+                <div id="visMachineContent">IV-Kone</div>
+                <small style="margin-top: 5px;">← Klikoi</small>
+            </div>
+            <div class="duct-lanes-wrapper" id="visLanes"></div>
+        </div>
+    </div>
+
+    <!-- ADD/EDIT MACHINE VIEW -->
+    <div class="view" id="view-add-machine">
+        <div style="padding: 15px;">
+            <h3 id="machineTitle">Uusi IV-Kone</h3>
+            <label>Nimi</label>
+            <input type="text" id="machineName" placeholder="esim. Vallox 145">
+            <label>Nopeus (1-4)</label>
+            <input type="number" id="machineSpeed" min="1" max="4">
+            <label>Tulo %</label>
+            <input type="number" id="machineSupPct" placeholder="50">
+            <label>Poisto %</label>
+            <input type="number" id="machineExtPct" placeholder="50">
+            <label>Tulo l/s (kokonais)</label>
+            <input type="number" id="machineSupplyQ" placeholder="100">
+            <label>Poisto l/s (kokonais)</label>
+            <input type="number" id="machineExtractQ" placeholder="100">
+            <button class="btn btn-primary" onclick="saveMachine()">Tallenna</button>
+        </div>
+    </div>
+
+    <!-- MEASUREMENT/VALVE EDIT VIEW -->
+    <div class="view" id="view-measure">
+        <div style="padding: 15px;">
+            <h3 id="measureTitle">Uusi mittaus</h3>
+            <label>Huone / Nimi</label>
+            <input type="text" id="roomName" placeholder="esim. Olohuone">
+            <label>Manuaalinen nimi (valinnainen)</label>
+            <input type="text" id="manualName" placeholder="">
+            
+            <label style="font-weight: bold; margin-top: 15px;">Venttiili</label>
+            <label>Malli</label>
+            <select id="valveModelSelect" onchange="updateSizeSelect()"></select>
+            <label>Koko</label>
+            <select id="valveSizeSelect" onchange="finalizeValveSelection()"></select>
+            <input type="hidden" id="valveType">
+            
+            <div id="valveReferenceTable" style="background: #fffacd; padding: 10px; border-radius: 6px; margin: 10px 0; font-size: 12px; display: none;"></div>
+            
+            <label>Runko</label>
+            <select id="parentDuctId"></select>
+            
+            <label>Tavoitevirta l/s</label>
+            <input type="number" id="targetQ" placeholder="15.0">
+            
+            <label>Mitattu paine Pa</label>
+            <input type="number" id="measuredP" placeholder="25">
+            
+            <label>Avausaste (0-10, tai pos)</label>
+            <input type="number" id="currentPos" step="0.1" oninput="updateLiveK()" placeholder="2.5">
+            <div id="liveKValue" style="font-size: 13px; color: #0066cc; font-weight: bold; margin-top: -8px; margin-bottom: 15px;"></div>
+            
+            <label>Manuaalinen K-arvo (valinnainen)</label>
+            <input type="number" id="manualK" step="0.1" placeholder="">
+            
+            <label>Kuva (valinnainen)</label>
+            <input type="file" id="valvePhotoInput" accept="image/*" onchange="previewPhoto()">
+            <img id="valvePhotoPreview" class="photo-preview">
+            
+            <button class="btn btn-primary" id="btnCalcSave" onclick="calculateAndSave()">Laske & Tallenna</button>
+            <button class="btn btn-secondary" onclick="calculateAndSave(true)" style="margin-top: 10px;">Tallenna & Seuraava</button>
+            <button class="btn btn-danger" id="btnDeleteValve" style="margin-top: 10px; display: none;" onclick="deleteValve()">Poista venttiili</button>
+            <div id="calcResult" style="display: none; margin-top: 15px; background: #e8f4fd; padding: 15px; border-radius: 8px;"></div>
+        </div>
+    </div>
+
+    <!-- ADD DUCT VIEW -->
+    <div class="view" id="view-add-duct">
+        <div style="padding: 15px;">
+            <h3>Runko</h3>
+            <label>Tyyppi</label>
+            <select id="ductType">
+                <option value="supply">Tulo</option>
+                <option value="extract">Poisto</option>
+            </select>
+            <label>Nimi</label>
+            <input type="text" id="ductName" placeholder="esim. Päärunko">
+            <label>Koko (mm)</label>
+            <input type="number" id="ductSize" value="125">
+            <button class="btn btn-primary" onclick="saveDuct()">Tallenna</button>
+        </div>
+    </div>
+
+    <!-- SETTINGS VIEW -->
+    <div class="view" id="view-settings">
+        <div style="padding: 15px;">
+            <h3>Asetukset</h3>
+            <label>Mittaaja</label>
+            <input type="text" id="setMeasurer" placeholder="Nimi">
+            <label>Tulopuhaltimen teho (W)</label>
+            <input type="number" id="setPowerSup" placeholder="0">
+            <label>Poistopuhaltimen teho (W)</label>
+            <input type="number" id="setPowerExt" placeholder="0">
+            <label><input type="checkbox" id="chkSwept"> Puhdistettu</label>
+            <label><input type="checkbox" id="chkBearSup"> Laakeri tulo OK</label>
+            <label><input type="checkbox" id="chkBearExt"> Laakeri poisto OK</label>
+            <label>Logo (kuva)</label>
+            <input type="file" id="logoUpload" accept="image/*" onchange="handleLogoUpload()">
+            <img id="settingsLogoPreview" style="max-height: 80px; margin-top: 10px; display: none; border-radius: 8px;">
+            <button class="btn btn-primary" onclick="saveSettings()">Tallenna</button>
+        </div>
+    </div>
+
+    <!-- REPORT VIEW -->
+    <div class="view" id="view-report">
+        <div style="padding: 15px;">
+            <h3>Mittausraportti</h3>
+            <img id="reportLogoImg" style="max-height: 50px; max-width: 150px; display: none; margin-bottom: 10px;">
+            <div id="reportContent"></div>
+            <label>Allekirjoitus</label>
+            <div class="signature-wrapper">
+                <canvas id="signaturePad"></canvas>
+                <button class="clear-sig-btn" onclick="clearSignature()">Tyhjennä</button>
+            </div>
+            <button class="btn btn-primary" onclick="printReport()" style="margin-top: 15px;">🖨️ Tulosta</button>
+        </div>
+    </div>
+
+    <!-- OPTIMIZE VIEW -->
+    <div class="view" id="view-optimize">
+        <div style="padding: 15px;">
+            <h3>⚡ Optimointiraportti</h3>
+            <div id="optSteps" style="background: #f9f9f9; padding: 15px; border-radius: 8px;"></div>
+            <button class="btn btn-secondary" onclick="showView('view-details')" style="margin-top: 15px;">Takaisin</button>
+        </div>
+    </div>
+
+    <!-- BALANCE VIEW -->
+    <div class="view" id="view-balance">
+        <div style="padding: 15px;">
+            <h3>⚖️ Ilmanvaihdon tasapaino</h3>
+            <div id="balanceContent"></div>
+            <button class="btn btn-secondary" onclick="showView('view-details')" style="margin-top: 15px;">Takaisin</button>
+        </div>
+    </div>
+
+    <!-- BATCH INPUT VIEW -->
+    <div class="view" id="view-batch">
+        <div style="padding: 15px;">
+            <h3>📝 Sarjasyöttö</h3>
+            <div id="batchDuctName" style="font-weight: bold; margin-bottom: 15px;"></div>
+            
+            <label>Valitse venttiilimalli</label>
+            <select id="batchNewModel" onchange="updateBatchSizeSelect()"></select>
+            
+            <label>Koko</label>
+            <select id="batchNewSize"></select>
+            
+            <label>Montako venttiiliä</label>
+            <input type="number" id="batchNewCount" min="1" value="1">
+            
+            <button class="btn btn-secondary" onclick="addBatchValves()">Lisää</button>
+            
+            <label style="margin-top: 20px;">Lämpötila (°C)</label>
+            <input type="number" id="batchTemp" value="20">
+            <button class="btn btn-secondary" onclick="recalcAllBatch()">Laske uudelleen</button>
+            
+            <div id="batchList" style="margin-top: 15px; overflow-x: auto;"></div>
+            
+            <button class="btn btn-primary" onclick="saveBatch()">Tallenna kaikki</button>
+        </div>
+    </div>
+
+    <button class="fab" onclick="showVisual()">📊</button>
+    <div id="newProjectModal" class="modal-overlay">
+        <div class="modal-box">
+            <h3>Uusi projekti</h3>
+            
+            <label>Kohteen nimi</label>
+            <input type="text" id="newProjName" placeholder="Esim. As Oy Esimerkki">
+            
+            <label>Järjestelmän tyyppi</label>
+            <select id="newProjType">
+                <option value="ahu">🏠 IV-Kone (Tulo & Poisto)</option>
+                <option value="roof">💨 Huippuimuri (Vain Poisto)</option>
+                <option value="hybrid">🔄 Molemmat / Hybridi</option>
+            </select>
+            
+            <div style="display:flex; gap:10px; margin-top:20px;">
+                <button class="btn btn-primary" onclick="confirmCreateProject()">Luo kohde</button>
+                <button class="btn btn-secondary" onclick="closeModal()">Peruuta</button>
+            </div>
+        </div>
+    </div>
+
+    <script src="script.js"></script>
+</body>
+</html>
