@@ -20,9 +20,7 @@
     <div class="view active" id="view-projects">
         <div style="padding: 20px;">
             <button class="btn btn-primary" onclick="showNewProjectModal()">+ Uusi projekti</button>
-            <button class="btn btn-demo" onclick="createDemoRoof()">📋 Lataa demo: Huippuimuri</button>
-            <button class="btn btn-demo" onclick="createDemoAHU()">📋 Lataa demo: Tulo/Poisto</button>
-            <button class="btn btn-demo" onclick="createDemoHybrid()">📋 Lataa demo: Hybridi</button>
+            <button class="btn btn-demo" onclick="createDemoProject()">📋 Lataa demo</button>
             <div id="noProjectsMsg" style="text-align: center; color: #999; margin-top: 40px;">Ei projekteja. Luo uusi!</div>
             <div id="projectsList"></div>
         </div>
@@ -37,10 +35,7 @@
                 <button class="btn btn-primary" onclick="showVisual()" style="width:auto; padding:8px 12px;">📊 Näytä kaavio</button>
                 <button class="btn btn-secondary" onclick="showBalance()" style="width:auto; padding:8px 12px;">⚖️ Tasapaino</button>
                 <button class="btn btn-secondary" onclick="optimizeEnergy()" style="width:auto; padding:8px 12px;">⚡ Optimoi</button>
-                <button class="btn btn-secondary" onclick="showReportSupplyExtract()" style="width:auto; padding:8px 12px;">📄 Näytä pöytäkirja: Tulo/Poisto</button>
-                <button class="btn btn-secondary" onclick="showReportRoof()" style="width:auto; padding:8px 12px;">📄 Näytä pöytäkirja: Huippuimuri</button>
-                <button class="btn btn-secondary" onclick="printReportAHU()" style="width:auto; padding:8px 12px;">🖨️ Tulosta Tulo/Poisto</button>
-                <button class="btn btn-secondary" onclick="printReportRoof()" style="width:auto; padding:8px 12px;">📄 Tulosta Huippuimuri</button>
+                <button class="btn btn-secondary" onclick="exportReport()" style="width:auto; padding:8px 12px;">📄 Raportti</button>
                 <button class="btn btn-secondary" onclick="showSettings()" style="width:auto; padding:8px 12px;">⚙️ Asetukset</button>
             </div>
             <div class="mode-selector" id="modeSelector">
@@ -98,35 +93,8 @@
             </div>
         </div>
 
-        <div id="visRoofBar" style="position:sticky; top:46px; z-index:90; background:#fafafa; border-bottom:1px solid #ddd; padding:8px 12px; display:flex; gap:12px; align-items:center;"></div>
-
         <div id="visScrollArea" style="overflow:auto; height:80vh; background:#eef; position:relative;">
             <div id="visContent" style="transform-origin: 0 0; transition: transform 0.1s ease; padding:50px; min-height:1000px; min-width:1000px;">
-            </div>
-        </div>
-    </div>
-
-    <!-- APARTMENT MODAL -->
-    <div class="modal-overlay" id="aptModal" style="display:none;">
-        <div class="modal-content" style="width:90%; max-width:500px;">
-            <div class="apt-header">
-                <span id="aptModalTitle">Asunto</span>
-                <button class="clear-sig-btn" onclick="closeApartmentModal()">✖</button>
-            </div>
-            <div id="aptModalBody" style="padding:10px;">
-                <div style="font-size:12px; color:#666; margin-bottom:6px;">Venttiilit</div>
-                <table class="report" id="aptValveTable">
-                    <thead>
-                        <tr>
-                            <th>Huone</th><th>Malli</th><th>Pa (Pa)</th><th>Avaus</th><th>Virtaus (l/s)</th><th>Tavoite (l/s)</th>
-                        </tr>
-                    </thead>
-                    <tbody></tbody>
-                </table>
-                <div style="margin-top:10px; display:flex; gap:6px;">
-                    <button class="btn btn-primary" style="width:auto;" onclick="saveApartmentEdits()">Tallenna</button>
-                    <button class="btn btn-secondary" style="width:auto;" onclick="closeApartmentModal()">Sulje</button>
-                </div>
             </div>
         </div>
     </div>
@@ -216,11 +184,6 @@
             <input type="text" id="ductName" placeholder="esim. Päärunko">
             <label>Koko (mm)</label>
             <input type="number" id="ductSize" value="125">
-            <label>Kanavisto</label>
-            <select id="ductGroup">
-                <option value="ahu">IV-Kone (Tulo/Poisto)</option>
-                <option value="roof">Huippuimuri (Poisto)</option>
-            </select>
             <button class="btn btn-primary" onclick="saveDuct()">Tallenna</button>
         </div>
     </div>
@@ -274,7 +237,7 @@
         <div style="padding: 15px;">
             <h3>⚖️ Ilmanvaihdon tasapaino</h3>
             <div id="balanceContent"></div>
-            <button class="btn btn-secondary" onclick="showView('view-details')" style="margin-top: 15px;">Takaisin</button>
+            <button class="btn btn-secondary" onclick="showView('view-details')">Peruuta</button>
         </div>
     </div>
 
@@ -358,34 +321,6 @@
             <div class="chk-row"><input type="checkbox" id="chkKPH" checked> <label>KPH</label></div>
             <div class="chk-row"><input type="checkbox" id="chkVH"> <label>VH</label></div>
             <div class="chk-row"><input type="checkbox" id="chkFresh"> <label>Korvausilma (Venttiili)</label></div>
-            <div class="chk-row"><input type="checkbox" id="chkWC"> <label>WC</label></div>
-            <div class="chk-row"><input type="checkbox" id="chkMH"> <label>Makuuhuone</label></div>
-            <div class="chk-row"><input type="checkbox" id="chkOH"> <label>Olohuone</label></div>
-            <div class="chk-row"><input type="checkbox" id="chkSA"> <label>Sauna</label></div>
-            <div class="chk-row"><input type="checkbox" id="chkKHH"> <label>Kodinhoitohuone</label></div>
-            <hr style="border:1px solid #eee; margin:10px 0;">
-            <label style="font-weight:bold;">Manuaalinen lisäys:</label>
-            <div class="gen-row">
-                <label>Huoneen nimi:</label>
-                <input type="text" id="genCustomName" placeholder="esim. Sauna2" style="width:120px;">
-            </div>
-            <div class="gen-row">
-                <label>Tyyppi:</label>
-                <select id="genCustomType" style="width:120px;">
-                    <option value="extract">Poisto</option>
-                    <option value="supply">Tulo/Korvausilma</option>
-                </select>
-            </div>
-            <div class="gen-row">
-                <label>Malli/koko:</label>
-                <select id="genCustomModel" style="width:160px;">
-                    <option value="h_kso100">KSO-100 (poisto)</option>
-                    <option value="h_kso125">KSO-125 (poisto)</option>
-                    <option value="fresh100">Fresh-100 (tulo)</option>
-                    <option value="fresh125">Fresh-125 (tulo)</option>
-                </select>
-            </div>
-            <div class="chk-row"><input type="checkbox" id="chkCustom"> <label>Lisää tämä huone joka asuntoon</label></div>
             <div style="display:flex; gap:10px; margin-top:20px;">
                 <button class="btn btn-success" onclick="runGenerator()">Luo asunnot</button>
                 <button class="btn btn-secondary" onclick="closeGenerator()">Peruuta</button>
