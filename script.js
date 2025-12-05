@@ -1135,6 +1135,14 @@ function renderVerticalStackInto(container, p) {
         delBtn.onclick = (e) => { e.stopPropagation(); deleteDuctFromVisual(shaft.id, e); };
         head.appendChild(delBtn);
 
+        // Lisää venttiili tähän runkoon (pystynäkymä)
+        const addBtn = document.createElement('button');
+        addBtn.className = 'btn btn-secondary';
+        addBtn.style.cssText = 'margin-left:6px; padding:2px 6px; font-size:11px;';
+        addBtn.textContent = '+ Lisää venttiili';
+        addBtn.onclick = (e) => { e.stopPropagation(); quickAddValveToDuct(shaft.id); };
+        head.appendChild(addBtn);
+
         // Näytä "Vain tämä" -nappi...
         if (totalShafts > 1 && !window._visTowerFilter) {
             const onlyBtn = document.createElement('button');
@@ -1365,6 +1373,7 @@ function setApartmentFloorPrompt(p, apt) {
                                 ${duct.name} <span style="font-weight:normal; color:#888;">(${duct.size})</span>
                                 <span style="margin-left:8px; font-weight:normal; color:#666;">Σ mitattu: ${(duct.flow||0).toFixed ? (duct.flow||0).toFixed(1) : (parseFloat(duct.flow)||0).toFixed(1)} l/s</span>
                                 <button class="list-action-btn" title="Poista runko" style="float:right; font-size:14px; color:#bbb;" onclick="event.stopPropagation();deleteDuctFromVisual(${duct.id}, event)">🗑️</button>
+                                <button class="list-action-btn" title="Lisää venttiili tähän runkoon" style="float:right; font-size:14px; color:${colorHex}; margin-right:8px;" onclick="event.stopPropagation();quickAddValveToDuct(${duct.id})">+ Lisää venttiili</button>
                             </h4>
                             ${window._editingDuctId===duct.id?`
                             <div class="duct-edit-box" style="background:#fafafa; border:1px solid #ddd; border-radius:6px; padding:10px; margin:6px 0 10px 0;">
@@ -1416,6 +1425,13 @@ function setApartmentFloorPrompt(p, apt) {
                         ov.className = 'modal-overlay';
                         document.body.appendChild(ov);
                     }
+                    // Malli/koko valinnat
+                    const type = v.type || '';
+                    const modelName = valveIdToModelId[type] || '';
+                    const models = Object.keys(valveGroups).sort();
+                    const modelOptions = ['<option value="">-- Valitse Malli --</option>'].concat(models.map(m=>`<option value="${m}" ${m===modelName?'selected':''}>${m}</option>`)).join('');
+                    const sizes = modelName && valveGroups[modelName] ? valveGroups[modelName].sort((a,b)=>a.sortSize-b.sortSize) : [];
+                    const sizeOptions = ['<option value="">-- Koko --</option>'].concat(sizes.map(s=>`<option value="${s.id}" ${s.id===type?'selected':''}>${s.size}</option>`)).join('');
                     ov.innerHTML = `
                         <div class="modal">
                             <div class="modal-header">Muokkaa venttiiliä</div>
@@ -1423,6 +1439,12 @@ function setApartmentFloorPrompt(p, apt) {
                                 <div class="valve-edit-row">
                                     <label>Huone
                                         <input id="valve-room-${idx}" type="text" value="${v.room||''}" class="input input-text input-sm w-140">
+                                    </label>
+                                    <label>Malli
+                                        <select id="valve-model-${idx}" class="input input-sm w-160" onchange="updateValveModalSizes(${idx})">${modelOptions}</select>
+                                    </label>
+                                    <label>Koko
+                                        <select id="valve-size-${idx}" class="input input-sm w-120">${sizeOptions}</select>
                                     </label>
                                     <label>Virtaus (l/s)
                                         <input id="valve-flow-${idx}" type="number" min="0" step="0.1" value="${(parseFloat(v.flow)||0).toFixed(1)}" class="input input-number input-sm w-110">
@@ -1445,6 +1467,15 @@ function setApartmentFloorPrompt(p, apt) {
                         </div>`;
                     ov.style.display = 'flex';
                 }
+                // Päivitä modalin koko-lista valitun mallin perusteella
+                function updateValveModalSizes(idx){
+                    const modelSel = document.getElementById(`valve-model-${idx}`);
+                    const sizeSel = document.getElementById(`valve-size-${idx}`);
+                    if(!modelSel || !sizeSel) return;
+                    const model = modelSel.value;
+                    const sizes = model && valveGroups[model] ? valveGroups[model].sort((a,b)=>a.sortSize-b.sortSize) : [];
+                    sizeSel.innerHTML = '<option value="">-- Koko --</option>' + sizes.map(s=>`<option value="${s.id}">${s.size}</option>`).join('');
+                }
                 function closeValvePanel(){
                     const ov = document.getElementById('valve-modal-overlay');
                     if(ov){ ov.style.display = 'none'; ov.innerHTML = ''; }
@@ -1463,6 +1494,11 @@ function setApartmentFloorPrompt(p, apt) {
                     if(targetEl){ const t = parseFloat(targetEl.value); if(!isNaN(t)) v.target = t; }
                     if(paEl){ const pval = parseFloat(paEl.value); if(!isNaN(pval)) v.measuredP = pval; else v.measuredP = null; }
                     if(posEl){ let pos = parseFloat(posEl.value); if(!isNaN(pos)) { if(pos < -20) pos = -20; if(pos > 20) pos = 20; v.pos = Math.round(pos); } }
+                    const modelSel = document.getElementById(`valve-model-${idx}`);
+                    const sizeSel = document.getElementById(`valve-size-${idx}`);
+                    if(sizeSel){ const newType = sizeSel.value; if(newType) v.type = newType; }
+                    // Päivitä live-K laskenta, jos dataa saatavilla
+                    try { if (v.pos!==undefined && v.measuredP!==undefined) { v.flow = calculateFlowFromValve(v.type, v.pos, v.measuredP); } } catch(e) {}
                     saveData();
                     closeValvePanel();
                     renderVisualContent();
@@ -1650,6 +1686,75 @@ function showAddValve() {
     editingValveIndex = null;
     populateDuctSelect();
     showView('view-measure');
+}
+
+// Pikanappi: Lisää venttiili suoraan tiettyyn runkoon
+function quickAddValveToDuct(ductId){
+    preSelectedDuctId = ductId;
+    showAddValve();
+    const sel = document.getElementById('parentDuctId');
+    if(sel) sel.value = String(ductId);
+    // Huippuimuri/pystynäkymä: avaa valintamodal kerros + rappu
+    try {
+        const p = projects.find(x => x.id === activeProjectId);
+        const duct = p && (p.ducts||[]).find(d=>d.id==ductId);
+        if (duct && duct.group === 'roof') {
+            openAptFloorDialog(ductId);
+        }
+    } catch(e) {}
+}
+
+// Valintamodal: Kerros + Rappu (Huippuimuri)
+function openAptFloorDialog(ductId){
+    const p = projects.find(x => x.id === activeProjectId);
+    if(!p) return;
+    const ovId = 'apt-floor-modal-overlay';
+    let ov = document.getElementById(ovId);
+    if(!ov){ ov = document.createElement('div'); ov.id = ovId; ov.className = 'modal-overlay'; document.body.appendChild(ov); }
+    // Rappulista: kaikki roof-ryhmän extract-rungot (ensimmäinen kirjain nimiin)
+    const roofDucts = (p.ducts||[]).filter(d=>d.group==='roof' && d.type==='extract');
+    const rappuLetters = Array.from(new Set(roofDucts.map(d=> (d.name||'').trim().charAt(0).toUpperCase()).filter(x=>x))).sort();
+    const rappuOpts = rappuLetters.length ? rappuLetters.map(l=>`<option value="${l}">${l}</option>`).join('') : '<option value="">-</option>';
+    // Kerroslista: 1..10 (voi laajentaa myöhemmin asetuksilla)
+    const floors = Array.from({length:10}, (_,i)=>i+1);
+    const floorOpts = floors.map(f=>`<option value="${f}">${f}</option>`).join('');
+    ov.innerHTML = `
+        <div class="modal">
+            <div class="modal-header">Lisää venttiili — valitse rappu ja kerros</div>
+            <div class="modal-content">
+                <div class="valve-edit-row">
+                    <label>Rappu
+                        <select id="selRappu" class="input input-sm w-120">${rappuOpts}</select>
+                    </label>
+                    <label>Kerros
+                        <select id="selKerros" class="input input-sm w-120">${floorOpts}</select>
+                    </label>
+                    <label>Asunto (tunnus)
+                        <input id="selApt" type="text" placeholder="Esim. A1" class="input input-text input-sm w-140">
+                    </label>
+                </div>
+            </div>
+            <div class="modal-actions">
+                <button class="btn btn-primary" onclick="confirmAptFloor(${ductId})">Jatka</button>
+                <button class="btn" onclick="closeAptFloorDialog()">Peruuta</button>
+            </div>
+        </div>`;
+    ov.style.display = 'flex';
+}
+function closeAptFloorDialog(){ const ov = document.getElementById('apt-floor-modal-overlay'); if(ov){ ov.style.display='none'; ov.innerHTML=''; } }
+function confirmAptFloor(ductId){
+    const p = projects.find(x => x.id === activeProjectId); if(!p) return;
+    const rappu = (document.getElementById('selRappu')?.value || '').trim().toUpperCase();
+    const floorStr = document.getElementById('selKerros')?.value || '';
+    let apt = (document.getElementById('selApt')?.value || '').trim();
+    // Jos asuntoa ei annettu, muodostetaan esim. "A" + kerros
+    if(!apt && rappu){ apt = `${rappu}${floorStr}`; }
+    // Esitäytä mittauslomakkeen kenttä
+    const aptEl = document.getElementById('apartmentName'); if(aptEl) aptEl.value = apt;
+    // Tallenna kerroskarttaan
+    const num = parseInt(floorStr,10);
+    if(!isNaN(num) && apt){ if(!p.meta) p.meta={}; if(!p.meta.floorMap) p.meta.floorMap={}; p.meta.floorMap[apt]=num; try{ saveData(); }catch(e){} }
+    closeAptFloorDialog();
 }
 
 // Muokkaa venttiiliä: esitäytä mittauslomake ja mene mittausnäkymään
