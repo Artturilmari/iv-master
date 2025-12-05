@@ -2070,3 +2070,43 @@ function clearSignatureReport(canvasId){
     const ctx = c.getContext('2d');
     ctx.clearRect(0,0,c.width,c.height);
 }
+
+// --- Allekirjoituspadin alustus ja tyhjennys ---
+function initSignaturePad(){
+    const ids = ['signaturePad','signaturePadReport1','signaturePadReport2'];
+    ids.forEach(id=>{
+        const c = document.getElementById(id);
+        if(!c) return;
+        const parent = c.parentElement;
+        const w = Math.min(400, parent ? parent.clientWidth - 40 : 300);
+        const h = 120;
+        c.width = w;
+        c.height = h;
+        const ctx = c.getContext('2d');
+        ctx.lineWidth = 2;
+        ctx.lineJoin = 'round';
+        ctx.lineCap = 'round';
+        ctx.strokeStyle = '#222';
+        let drawing = false;
+        let last = null;
+        const getPos = (e) => {
+            const rect = c.getBoundingClientRect();
+            const x = (e.touches ? e.touches[0].clientX : e.clientX) - rect.left;
+            const y = (e.touches ? e.touches[0].clientY : e.clientY) - rect.top;
+            return {x, y};
+        };
+        const start = (e) => { drawing = true; last = getPos(e); e.preventDefault(); };
+        const move = (e) => {
+            if(!drawing) return; const p = getPos(e);
+            ctx.beginPath(); ctx.moveTo(last.x, last.y); ctx.lineTo(p.x, p.y); ctx.stroke(); last = p; e.preventDefault();
+        };
+        const end = () => { drawing = false; };
+        c.onmousedown = start; c.onmousemove = move; window.onmouseup = end;
+        c.ontouchstart = start; c.ontouchmove = move; window.ontouchend = end;
+    });
+}
+
+function clearSignature(){
+    const c = document.getElementById('signaturePad');
+    if(!c) return; const ctx = c.getContext('2d'); ctx.clearRect(0,0,c.width,c.height);
+}
