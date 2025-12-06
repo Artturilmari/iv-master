@@ -776,6 +776,20 @@ function showVisual() {
 
     renderVisualContent();
     showView('view-visual');
+
+    // Automaattinen suhteellisen säädön paneeli
+    const adjustPanel = document.getElementById('relativeAdjustPanel');
+    if (adjustPanel) {
+        if (p.valves && p.valves.length > 0) {
+            const suggestions = suggestValveAdjustments(p, p.ducts, p.valves);
+            window._lastValveSuggestions = suggestions;
+            adjustPanel.innerHTML = createRelativeAdjustPanel(suggestions);
+            adjustPanel.style.display = 'block';
+        } else {
+            adjustPanel.style.display = 'none';
+            adjustPanel.innerHTML = '';
+        }
+    }
 }
 
 
@@ -1684,7 +1698,14 @@ function setApartmentFloorPrompt(p, apt) {
                     const valves = (p.valves||[]).filter(v=> relevantDucts.some(d=> d.id===v.parentDuctId));
                     const suggestions = suggestValveAdjustments(p, relevantDucts, valves);
                     if (!suggestions.length) { alert('Ei ehdotuksia. Venttiilit jo lähellä pyyntiä.'); return; }
-                    showRelativeAdjustModal(p, suggestions);
+                    const panel = document.getElementById('relativeAdjustPanel');
+                    if (panel) {
+                        panel.innerHTML = createRelativeAdjustPanel(suggestions);
+                        panel.style.display = 'block';
+                        window._lastValveSuggestions = suggestions;
+                    } else {
+                        showRelativeAdjustModal(p, suggestions);
+                    }
                 }
 
                 // Keskushormin/kanavan virtaus- ja painelaskenta, huomioi venttiili-asetukset
@@ -1692,20 +1713,20 @@ function setApartmentFloorPrompt(p, apt) {
                     const sumTargetFlow = valves.reduce((a, v) => a + (parseFloat(v.targetFlow || v.target || 0)), 0);
                     if (sumTargetFlow <= 0 || valves.length === 0) return { P_duct: 0, totalFlow: 0, flows: {} };
 
-                    // Etsitään iteratiivisesti paine, joka tuottaa tavoitevirran
+                                                <thead><tr><th>Kohde</th><th>Tyyppi</th><th>Pyynti (l/s)</th><th>Mitattu Q (l/s)</th><th>Simuloitu P (Pa)</th><th>Uusi Avaus</th><th>Simuloitu Q (l/s)</th></tr></thead>
                     let P_low = 10, P_high = 200, P_duct = 50; 
                     let maxIterations = 50;
                     const tol = 0.1; // 0.1 l/s toleranssi
 
                     let actualFlow = 0;
-                    let flows = {};
+                                                        const deltaPosStr = isValve ? `${s.finalPos}` : (s.advice||'-');
 
                     // Oletus: Vakiopaine, jota kone yrittää pitää (esim. 100 Pa)
                     const P_fan = 100; 
 
                     for (let i = 0; i < maxIterations; i++) {
                         actualFlow = 0;
-                        flows = {};
+                                                                    <td style=\"font-weight:bold; color:${isValve?'#1976D2':'#d35400'};\">${deltaPosStr}</td>
                         
                         valves.forEach(v => {
                             const pos = parseFloat(v.pos || 0);
