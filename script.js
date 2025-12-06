@@ -79,9 +79,10 @@ function createDemoTuloPoisto(){
                 proj.ducts.push({ id: supplyId, type:'supply', group:'apt', apartment:aptCode, name:`Tulo ${aptCode}` });
                 proj.ducts.push({ id: extractId, type:'extract', group:'apt', apartment:aptCode, name:`Poisto ${aptCode}` });
                 // Venttiileitä (enemmän tuloja ja poistoja) eri avauksilla (pos) ja paineilla (measuredP)
-                const rnd = (base)=> Number((base + (Math.random()*1.6 - 0.8)).toFixed(1)); // ±0.8 l/s
-                const rpos = ()=> Math.round(20 + Math.random()*60); // avaus % ~20-80
-                const rpa = ()=> Number((20 + Math.random()*80).toFixed(0)); // Pa ~20-100
+                // Tahallinen epätasapaino: virtaus usein pienempi kuin pyynti, avaukset matalampia
+                const rnd = (base)=> Number((base + (Math.random()*4.0 - 2.0)).toFixed(1)); // ±2.0 l/s heitto
+                const rpos = ()=> Math.round(10 + Math.random()*50); // 10-60% -> tarvitsee avausta
+                const rpa = ()=> Number((50 + Math.random()*50).toFixed(0)); // 50-100 Pa
                 // Tulo (3 kpl)
                 proj.valves.push({ id: genId(), parentDuctId: supplyId, dbKey:'c_dinoa', name:'Tulo DINO-A 125', room:'Olohuone', targetFlow: 8.0, flow: rnd(8.0), pos: rpos(), measuredP: rpa() });
                 proj.valves.push({ id: genId(), parentDuctId: supplyId, dbKey:'c_clik125', name:'Tulo CLIK 125', room:'Makuuhuone', targetFlow: 7.5, flow: rnd(7.5), pos: rpos(), measuredP: rpa() });
@@ -1880,10 +1881,11 @@ function setApartmentFloorPrompt(p, apt) {
                                            Jos näet IV-Kone-ehdotuksen, korjaa koneen asetuksia ennen venttiilejä!
                                         </div>
                                      </div>
-                                     <div class="modal-actions">
-                                        <button class="btn btn-secondary" onclick="(function(){document.body.removeChild(document.querySelector('.modal-overlay'));})()">Peruuta</button>
-                                        <button class="btn btn-primary" onclick="(function(){ window.applySuggestedAdjustments && applySuggestedAdjustments(); })()">Hyväksy muutokset</button>
-                                     </div>`;
+                                                 <div class="modal-actions">
+                                                     <button class="btn btn-secondary" onclick="(function(){document.body.removeChild(document.querySelector('.modal-overlay'));})()">Peruuta</button>
+                                                     <button class="btn btn-outline" onclick="(function(){ window.revertOriginalPositions && revertOriginalPositions(); })()">Palauta alkuperäinen avaus</button>
+                                                     <button class="btn btn-primary" onclick="(function(){ window.applySuggestedAdjustments && applySuggestedAdjustments(); })()">Hyväksy muutokset</button>
+                                                 </div>`;
                     overlay.appendChild(box);
                     document.body.appendChild(overlay);
                     // Talleta ehdotukset globaalisti hetkeksi
@@ -1908,6 +1910,19 @@ function setApartmentFloorPrompt(p, apt) {
                         try { saveData(); } catch(e) {}
                         renderVisualContent();
                         // Sulje modal
+                        if (document.querySelector('.modal-overlay')) document.body.removeChild(document.querySelector('.modal-overlay'));
+                    }
+                    // Palauta alkuperäiset avaukset (ennen hyväksyntää): käyttää originalPos kenttää
+                    window.revertOriginalPositions = function(){
+                        const p2 = projects.find(x => x.id === activeProjectId); if(!p2) return;
+                        (window._lastValveSuggestions||[]).forEach(s=>{
+                            if (s.type === 'valve' && s.originalPos !== undefined) {
+                                const v = (p2.valves||[])[s.idx]; if (!v) return;
+                                v.pos = Math.max(0, Math.min(100, Math.round(s.originalPos)));
+                            }
+                        });
+                        try { saveData(); } catch(e) {}
+                        renderVisualContent();
                         if (document.querySelector('.modal-overlay')) document.body.removeChild(document.querySelector('.modal-overlay'));
                     }
                 }
@@ -3009,10 +3024,10 @@ function createDemoAHU(){
     p.ducts.push({ id: supId, type: 'supply', name: 'Tulo', size: 160, group:'ahu' });
     p.ducts.push({ id: extId, type: 'extract', name: 'Poisto', size: 160, group:'ahu' });
     p.machines.push({ type:'ahu', name:'IV-Kone', supPct:50, extPct:50 });
-    // AHU venttiilit (rungolle suoraan), vähintään 4 per haara, eri avauksilla ja paineilla
-    const rnd = (base)=> Number((base + (Math.random()*3.0 - 1.5)).toFixed(1)); // ±1.5 l/s
-    const rpos = ()=> Math.round(15 + Math.random()*70); // 15-85%
-    const rpa = ()=> Number((18 + Math.random()*90).toFixed(0)); // 18-108 Pa
+    // AHU venttiilit: tahallinen epätasapaino
+    const rnd = (base)=> Number((base + (Math.random()*4.0 - 2.0)).toFixed(1)); // ±2.0 l/s
+    const rpos = ()=> Math.round(10 + Math.random()*50); // 10-60%
+    const rpa = ()=> Number((50 + Math.random()*50).toFixed(0)); // 50-100 Pa
     p.valves.push({ room:'Olohuone', type:'fresh125', target:30, flow:rnd(30), pos:rpos(), measuredP:rpa(), parentDuctId: supId });
     p.valves.push({ room:'Makuuhuone', type:'fresh100', target:15, flow:rnd(15), pos:rpos(), measuredP:rpa(), parentDuctId: supId });
     p.valves.push({ room:'Työhuone', type:'c_dinoa', target:12, flow:rnd(12), pos:rpos(), measuredP:rpa(), parentDuctId: supId });
@@ -3029,10 +3044,10 @@ function createDemoRoof(){
     const p = { id: Date.now(), name: 'Demo Huippuimuri', systemType: 'roof', ducts: [], valves: [], machines: [], meta: {} };
     const extId = Date.now()+3;
     p.ducts.push({ id: extId, type: 'extract', name: 'A-Rappu Poisto', size: 160, group:'roof' });
-    // Tornille vähintään 4 venttiiliä, eri avauksilla ja paineilla
-    const rndR = (base)=> Number((base + (Math.random()*2.0 - 1.0)).toFixed(1));
-    const rposR = ()=> Math.round(10 + Math.random()*80);
-    const rpaR = ()=> Number((20 + Math.random()*90).toFixed(0));
+    // Tornin venttiilit: tahallinen epätasapaino
+    const rndR = (base)=> Number((base + (Math.random()*4.0 - 2.0)).toFixed(1));
+    const rposR = ()=> Math.round(10 + Math.random()*50);
+    const rpaR = ()=> Number((50 + Math.random()*50).toFixed(0));
     p.valves.push({ apartment:'A1', room:'Keittiö', type:'h_kso125', target:25, flow:rndR(25), pos:rposR(), measuredP:rpaR(), parentDuctId: extId });
     p.valves.push({ apartment:'A2', room:'KPH', type:'h_kso100', target:15, flow:rndR(15), pos:rposR(), measuredP:rpaR(), parentDuctId: extId });
     p.valves.push({ apartment:'A3', room:'WC', type:'h_kso100', target:10, flow:rndR(10), pos:rposR(), measuredP:rpaR(), parentDuctId: extId });
@@ -3076,10 +3091,10 @@ function createDemoHybrid(){
     p.ducts.push({ id: roofExtId, type: 'extract', name: 'A-Rappu Poisto', size: 160, group:'roof' });
     // Kone
     p.machines.push({ type:'ahu', name:'IV-Kone', supPct:50, extPct:50 });
-    // AHU rungolle venttiileitä (vähintään 4 per haara), eri avauksilla ja paineilla
-    const rndH = (base)=> Number((base + (Math.random()*3.0 - 1.5)).toFixed(1));
-    const rposH = ()=> Math.round(15 + Math.random()*70);
-    const rpaH = ()=> Number((18 + Math.random()*90).toFixed(0));
+    // Hybridi: tahallinen epätasapaino
+    const rndH = (base)=> Number((base + (Math.random()*4.0 - 2.0)).toFixed(1));
+    const rposH = ()=> Math.round(10 + Math.random()*50);
+    const rpaH = ()=> Number((50 + Math.random()*50).toFixed(0));
     p.valves.push({ room:'Olohuone', type:'fresh125', target:30, flow:rndH(30), pos:rposH(), measuredP:rpaH(), parentDuctId: supId });
     p.valves.push({ room:'Makuuhuone', type:'fresh100', target:15, flow:rndH(15), pos:rposH(), measuredP:rpaH(), parentDuctId: supId });
     p.valves.push({ room:'Työhuone', type:'c_dinoa', target:12, flow:rndH(12), pos:rposH(), measuredP:rpaH(), parentDuctId: supId });
