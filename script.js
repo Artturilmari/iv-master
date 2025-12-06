@@ -1712,26 +1712,24 @@ function setApartmentFloorPrompt(p, apt) {
                 function calculateDuctFlowAndPressure(p, ductId, valves) {
                     const sumTargetFlow = valves.reduce((a, v) => a + (parseFloat(v.targetFlow || v.target || 0)), 0);
                     if (sumTargetFlow <= 0 || valves.length === 0) return { P_duct: 0, totalFlow: 0, flows: {} };
-
-                                                <thead><tr><th>Kohde</th><th>Tyyppi</th><th>Pyynti (l/s)</th><th>Mitattu Q (l/s)</th><th>Simuloitu P (Pa)</th><th>Uusi Avaus</th><th>Simuloitu Q (l/s)</th></tr></thead>
                     let P_low = 10, P_high = 200, P_duct = 50; 
                     let maxIterations = 50;
                     const tol = 0.1; // 0.1 l/s toleranssi
 
                     let actualFlow = 0;
-                                                        const deltaPosStr = isValve ? `${s.finalPos}` : (s.advice||'-');
+                    let flows = {};
 
                     // Oletus: Vakiopaine, jota kone yrittää pitää (esim. 100 Pa)
                     const P_fan = 100; 
 
                     for (let i = 0; i < maxIterations; i++) {
                         actualFlow = 0;
-                                                                    <td style=\"font-weight:bold; color:${isValve?'#1976D2':'#d35400'};\">${deltaPosStr}</td>
+                        flows = {};
                         
                         valves.forEach(v => {
                             const pos = parseFloat(v.pos || 0);
                             const type = v.type;
-                            const k = defaultGetK(type, pos);
+                            const k = (typeof defaultGetK === 'function') ? defaultGetK(type, pos) : 0;
                             const q = k * Math.sqrt(Math.max(0, P_duct));
                             flows[v._idx] = q;
                             actualFlow += q;
@@ -1749,24 +1747,24 @@ function setApartmentFloorPrompt(p, apt) {
                             P_duct = (P_duct + P_low) / 2;
                         }
                         
-                        // Estetään paineen karkaaminen
                         P_duct = Math.max(0, Math.min(300, P_duct));
                     }
                     
-                    // Rajoitetaan lopputulosta koneen maksipaineeseen (P_fan)
+                    // Rajoitetaan lopputulosta koneen maksipaineeseen
                     P_duct = Math.min(P_duct, P_fan); 
                     
                     // Lasketaan lopulliset virtaukset valitulla P_duct-arvolla
-                    actualFlow = 0; flows = {};
+                    actualFlow = 0; 
+                    flows = {};
                     valves.forEach(v => {
                         const pos = parseFloat(v.pos || 0);
                         const type = v.type;
-                        const k = defaultGetK(type, pos);
+                        const k = (typeof defaultGetK === 'function') ? defaultGetK(type, pos) : 0;
                         const q = k * Math.sqrt(Math.max(0, P_duct));
                         flows[v._idx] = q;
                         actualFlow += q;
                     });
-
+                    
                     return { P_duct: P_duct, totalFlow: actualFlow, flows: flows };
                 }
 
@@ -1866,8 +1864,13 @@ function setApartmentFloorPrompt(p, apt) {
                         showView('view-projects');
                         return;
                     }
+                    // Avaa visualisointi; paneeli renderöityy automaattisesti
                     showVisual();
-                    setTimeout(openRelativeAdjustPanel, 300);
+                    // Vieritä paneelin kohdalle, jos halutaan
+                    setTimeout(() => {
+                        const panel = document.getElementById('relativeAdjustContainer');
+                        if (panel) panel.scrollIntoView({ behavior: 'smooth' });
+                    }, 300);
                 }
 
                 function showRelativeAdjustModal(p, suggestions){
@@ -3098,6 +3101,63 @@ function printReportRoof(){
     const rows = data.map(v=>[v.apartment||'', v.room||'', v.type||'', v.measuredP??'', Math.round(v.pos??0), (parseFloat(v.flow)||0).toFixed(1), (parseFloat(v.target)||0).toFixed(1)]);
     doc.autoTable({ head: [['Asunto','Huone','Malli','Pa (Pa)','Avaus','Virtaus (l/s)','Tavoite (l/s)']], body: rows, startY: 20 });
     doc.save('poytakirja_huippuimuri.pdf');
+}
+
+// --- LISÄÄ TÄMÄ PUUTTUVA FUNKTIO SCRIPT.JS TIEDOSTOON ---
+function createRelativeAdjustPanel(suggestions) {
+    if (!suggestions || suggestions.length === 0) {
+        return '<div style="padding:15px; background:#e8f5e9; border:1px solid #c8e6c9; margin-top:15px;">✅ Kaikki mitatut virtaukset ovat pyynnin mukaisia (alle 10% virhe).</div>';
+    }
+
+    const tableHtml = `
+        <table class="report" style="margin-top:4px; width: 100%;">
+            <thead>
+                <tr>
+                    <th>Kohde</th>
+                    <th>Tyyppi</th>
+                    <th>Pyynti (l/s)</th>
+                    <th>Mitattu Q (l/s)</th>
+                    <th>Simuloitu P (Pa)</th>
+                    <th>Uusi Avaus</th> 
+                    <th>Simuloitu Q (l/s)</th>
+                </tr>
+            </thead>
+            <tbody>
+                ${suggestions.map(s=>{
+                    const actionText = s.type === 'valve' 
+                        ? s.finalPos // Pelkkä kokonaisluku (-20 ... 100)
+                        : s.advice; // Kone-ehdotus
+
+                    const actionStyle = s.type === 'machine' ? '#d35400' : '#1976D2';
+                    
+                    return `
+                        <tr>
+                            <td>${s.room || 'Kohde'}</td>
+                            <td>${s.type === 'valve' ? 'Venttiili' : 'IV-Kone'}</td>
+                            <td>${s.target.toFixed(1)}</td>
+                            <td>${s.flow.toFixed(1)}</td>
+                            <td>${s.simulatedP.toFixed(0)}</td>
+                            <td style="font-weight:bold; color:${actionStyle};">
+                                ${actionText}
+                            </td>
+                            <td>${s.type === 'valve' ? s.simFlow.toFixed(1) : '-'}</td>
+                        </tr>
+                    `;
+                }).join('')}
+            </tbody>
+        </table>
+    `;
+
+    return `
+        <div id="relativeAdjustContainer" style="padding: 15px; background: #fff3e0; border: 1px solid #ffcc80; border-radius: 8px; margin-top: 15px;">
+            <h3 style="margin: 0 0 10px 0; font-size: 16px; color: #e65100;">⚖️ Suhteellinen säätö - Ehdotukset</h3>
+            ${tableHtml}
+            <div style="font-size:12px;color:#d35400;margin-top:10px;">
+                HUOM: Uusi Avaus on kokonaisluku (Avoin 100 ... Kiinni -20). Simuloitu P on arvio runkopaineesta.
+            </div>
+            <button class="btn btn-success" style="margin-top: 10px;" onclick="applySuggestedAdjustments()">✅ Hyväksy kaikki ehdotetut säädöt</button>
+        </div>
+    `;
 }
 
 // Erillinen Hybridi-demo (molemmat järjestelmät)
