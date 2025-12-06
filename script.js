@@ -1686,23 +1686,166 @@ function setApartmentFloorPrompt(p, apt) {
                     showRelativeAdjustModal(p, suggestions);
                 }
 
-                function suggestValveAdjustments(p, ducts, valves){
-                    // Kevyt heuristiikka: laske suhteellinen virhe ja ehdota Δpos pienin askelin, huomioi kytkeytyminen 10% heuristiikalla
-                    const res=[]; const alpha=0.2; const coupling=0.1;
-                    const totalFlow = valves.reduce((a,v)=> a + (parseFloat(v.flow)||0), 0);
-                    valves.forEach((v,i)=>{
-                        const target = parseFloat(v.targetFlow||v.target||0) || 0; const flow = parseFloat(v.flow||0) || 0;
-                        if (!target || !flow) return;
-                        const rel = (target - flow)/(target||1);
-                        const baseDelta = Math.round(alpha * rel * 100); // prosenttiyksiköitä
-                        // Simuloitu vaikutus: oma muutos + naapuriin kytkeytyvä painevaikutus
-                        const neighborImpact = valves.filter((_,j)=> j!==i).reduce((acc,nv)=>{
-                            const nf = parseFloat(nv.flow||0)||0; return acc + coupling * (nf/(totalFlow||1));
-                        },0);
-                        const simFlow = flow + rel*target*0.5 - neighborImpact*flow*0.2; // karkea ennuste
-                        res.push({ idx:i, room:v.room, target:target, deltaPos: baseDelta, direction: baseDelta>=0?1:-1, simFlow, parentDuctId: v.parentDuctId });
+                // Keskushormin/kanavan virtaus- ja painelaskenta, huomioi venttiili-asetukset
+                function calculateDuctFlowAndPressure(p, ductId, valves) {
+                    const sumTargetFlow = valves.reduce((a, v) => a + (parseFloat(v.targetFlow || v.target || 0)), 0);
+                    if (sumTargetFlow <= 0 || valves.length === 0) return { P_duct: 0, totalFlow: 0, flows: {} };
+
+                    // Etsitään iteratiivisesti paine, joka tuottaa tavoitevirran
+                    let P_low = 10, P_high = 200, P_duct = 50; 
+                    let maxIterations = 50;
+                    const tol = 0.1; // 0.1 l/s toleranssi
+
+                    let actualFlow = 0;
+                    let flows = {};
+
+                    // Oletus: Vakiopaine, jota kone yrittää pitää (esim. 100 Pa)
+                    const P_fan = 100; 
+
+                    for (let i = 0; i < maxIterations; i++) {
+                        actualFlow = 0;
+                        flows = {};
+                        
+                        valves.forEach(v => {
+                            const pos = parseFloat(v.pos || 0);
+                            const type = v.type;
+                            const k = defaultGetK(type, pos);
+                            const q = k * Math.sqrt(Math.max(0, P_duct));
+                            flows[v._idx] = q;
+                            actualFlow += q;
+                        });
+
+                        const flowError = sumTargetFlow - actualFlow;
+                        
+                        if (Math.abs(flowError) < tol) {
+                            break; 
+                        } else if (flowError > 0) {
+                            P_low = P_duct; 
+                            P_duct = (P_duct + P_high) / 2;
+                        } else {
+                            P_high = P_duct; 
+                            P_duct = (P_duct + P_low) / 2;
+                        }
+                        
+                        // Estetään paineen karkaaminen
+                        P_duct = Math.max(0, Math.min(300, P_duct));
+                    }
+                    
+                    // Rajoitetaan lopputulosta koneen maksipaineeseen (P_fan)
+                    P_duct = Math.min(P_duct, P_fan); 
+                    
+                    // Lasketaan lopulliset virtaukset valitulla P_duct-arvolla
+                    actualFlow = 0; flows = {};
+                    valves.forEach(v => {
+                        const pos = parseFloat(v.pos || 0);
+                        const type = v.type;
+                        const k = defaultGetK(type, pos);
+                        const q = k * Math.sqrt(Math.max(0, P_duct));
+                        flows[v._idx] = q;
+                        actualFlow += q;
                     });
-                    return res;
+
+                    return { P_duct: P_duct, totalFlow: actualFlow, flows: flows };
+                }
+
+                // Korvaa vanha suggestValveAdjustments -funktio fysikaalisella mallilla (tarkka loppuasento)
+                function suggestValveAdjustments(p, ducts, valves){
+                    const suggestions = [];
+                    const ductMap = {};
+                    
+                    valves.forEach((v, i) => {
+                        if (!v.parentDuctId) return;
+                        if (!ductMap[v.parentDuctId]) ductMap[v.parentDuctId] = [];
+                        v._idx = i; // Tärkeä indeksi taulukkoviittaukseen
+                        ductMap[v.parentDuctId].push(v);
+                    });
+
+                    for (const ductId in ductMap) {
+                        const ductValves = ductMap[ductId];
+                        const currentSim = calculateDuctFlowAndPressure(p, ductId, ductValves);
+                        
+                        // 1. Etsi venttiili, joka tarvitsee eniten säätöä (virhe > 10%)
+                        const adjustmentCandidates = ductValves
+                            .map(v => {
+                                const target = parseFloat(v.targetFlow || v.target || 0) || 0;
+                                const flow = currentSim.flows[v._idx] || 0; 
+                                if (target === 0 || flow === 0) return null;
+                                const relError = (target - flow) / (target || 1);
+                                const K_req = currentSim.P_duct > 0 ? target / Math.sqrt(currentSim.P_duct) : 0;
+                                return { v, relError, K_req, flow, target, P_duct: currentSim.P_duct };
+                            })
+                            .filter(x => x !== null && Math.abs(x.relError) > 0.10)
+                            .sort((a, b) => Math.abs(b.relError) - Math.abs(a.relError)); 
+
+                        const worstValve = adjustmentCandidates[0];
+                        if (worstValve) { 
+                            const { v } = worstValve;
+                            const currentPos = parseFloat(v.pos || 0);
+                            let deltaPos = 0;
+                            const step = worstValve.relError > 0 ? 1 : -1; 
+                            
+                            // Simulaatio: etsi uusi asento, joka tuottaa K_req:n (käyttäen 0-100 avausasteikkoa)
+                            for (let j = 0; j < 100; j++) { 
+                                const testPos = currentPos + deltaPos;
+                                const testK = defaultGetK(v.type, testPos);
+                                
+                                if (Math.abs(testK - worstValve.K_req) < worstValve.K_req * 0.05) {
+                                    break;
+                                }
+                                if ((testK < worstValve.K_req && step > 0) || (testK > worstValve.K_req && step < 0)) {
+                                    deltaPos += step;
+                                } else {
+                                    break;
+                                }
+                                if (testPos <= 0 || testPos >= 100) break;
+                            }
+                            
+                            const newPos = Math.max(0, Math.min(100, currentPos + deltaPos));
+                            
+                            suggestions.push({
+                                idx: v._idx,
+                                room: v.room,
+                                target: worstValve.target,
+                                flow: worstValve.flow,
+                                deltaPos: Math.round(newPos - currentPos),
+                                finalPos: Math.round(newPos),
+                                simulatedP: currentSim.P_duct,
+                                parentDuctId: ductId,
+                                simFlow: defaultGetK(v.type, newPos) * Math.sqrt(Math.max(0, currentSim.P_duct)),
+                                originalPos: currentPos,
+                                type: 'valve'
+                            });
+                        }
+
+                        // 2. Koneen säätö (opastus)
+                        const ductTotalTarget = ductValves.reduce((a,v)=>a+(parseFloat(v.targetFlow||v.target||0)||0), 0);
+                        if (currentSim.totalFlow < ductTotalTarget * 0.95 && currentSim.P_duct < 95) { 
+                            suggestions.push({
+                                idx: -1, 
+                                room: `Runko: ${(p.ducts||[]).find(d=>d.id==ductId)?.name || 'Nimetön'}`,
+                                target: ductTotalTarget,
+                                flow: currentSim.totalFlow,
+                                deltaPos: null,
+                                simulatedP: currentSim.P_duct,
+                                parentDuctId: ductId,
+                                type: 'machine',
+                                advice: 'Virtaus alhainen. Nosta puhallinnopeutta (AHU/Roof Fan).'
+                            });
+                        }
+                    }
+                    
+                    return suggestions;
+                }
+
+                // Uusi navigointifunktio: suora säätö etusivulta
+                function showRelativeAdjustShortcut() {
+                    if (!activeProjectId) {
+                        alert("Valitse tai luo ensin projekti!");
+                        showView('view-projects');
+                        return;
+                    }
+                    showVisual();
+                    setTimeout(openRelativeAdjustPanel, 300);
                 }
 
                 function showRelativeAdjustModal(p, suggestions){
@@ -1713,15 +1856,29 @@ function setApartmentFloorPrompt(p, apt) {
                                                  <div class="modal-content">
                                                      <div style="font-size:12px;color:#555;margin-bottom:8px;">Symboli = käytetään summana. Käytämme "=" Tulo/Poisto l/s arvioimaan kokonaisvirtaa vs. pyyntiä.</div>
                                         <table class="report" style="margin-top:4px;">
-                                            <thead><tr><th>Huone</th><th>Pyynti (l/s)</th><th>Mitattu (l/s)</th><th>Δ avaus (%)</th><th>Simuloitu Q (l/s)</th></tr></thead>
+                                            <thead><tr><th>Kohde</th><th>Tyyppi</th><th>Pyynti (l/s)</th><th>Mitattu Q (l/s)</th><th>Simuloitu P (Pa)</th><th>Uusi Avaus (%)</th><th>Simuloitu Q (l/s)</th></tr></thead>
                                             <tbody>
                                                 ${suggestions.map(s=>{
-                                                    const v = (p.valves||[])[s.idx] || {};
-                                                    const flow = parseFloat(v.flow||0)||0;
-                                                    return `<tr><td>${s.room||'Huone'}</td><td>${s.target.toFixed(1)}</td><td>${flow.toFixed(1)}</td><td>${s.direction>0?'+':''}${s.deltaPos}</td><td>${s.simFlow.toFixed(1)}</td></tr>`;
+                                                    const isValve = s.type === 'valve';
+                                                    const v = isValve ? ((p.valves||[])[s.idx] || {}) : {};
+                                                    const flow = isValve ? (parseFloat(v.flow||0)||0) : s.flow || 0;
+                                                    const deltaPosStr = isValve ? `${s.finalPos}` : (s.advice||'-');
+                                                    return `<tr>
+                                                                <td>${s.room||'Kohde'}</td>
+                                                                <td>${isValve ? 'Venttiili' : 'IV-Kone'}</td>
+                                                                <td>${(s.target||0).toFixed(1)}</td>
+                                                                <td>${(flow||0).toFixed(1)}</td>
+                                                                <td>${(s.simulatedP||0).toFixed(0)}</td>
+                                                                <td style="font-weight:bold; color:${isValve?'#1976D2':'#d35400'};">${deltaPosStr}</td>
+                                                                <td>${isValve ? (s.simFlow||0).toFixed(1) : '-'}</td>
+                                                            </tr>`;
                                                 }).join('')}
                                             </tbody>
                                         </table>
+                                        <div style="font-size:12px;color:#d35400;margin-top:10px;">
+                                           HUOM: Simuloitu P on arvio runkopaineesta, joka huomioi kaikkien venttiilien säädöt (ristiinlaskenta).
+                                           Jos näet IV-Kone-ehdotuksen, korjaa koneen asetuksia ennen venttiilejä!
+                                        </div>
                                      </div>
                                      <div class="modal-actions">
                                         <button class="btn btn-secondary" onclick="(function(){document.body.removeChild(document.querySelector('.modal-overlay'));})()">Peruuta</button>
@@ -1735,8 +1892,9 @@ function setApartmentFloorPrompt(p, apt) {
                         const p2 = projects.find(x => x.id === activeProjectId); if(!p2) return;
                         (window._lastValveSuggestions||[]).forEach(s=>{
                             const v = (p2.valves||[])[s.idx]; if (!v) return;
-                            const cur = Math.round(parseFloat(v.pos||0)||0);
-                            v.pos = Math.max(0, Math.min(100, cur + s.deltaPos));
+                            if (s.type === 'valve' && s.finalPos !== undefined) {
+                                v.pos = s.finalPos; // käytä laskettua loppuasentoa
+                            }
                         });
                         // Tarkista koneen teho: jos = Tulo < = Pyynti selvästi, ehdota nostoa
                         const viewingApt = activeApartmentId || null;
