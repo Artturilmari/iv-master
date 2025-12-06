@@ -53,55 +53,64 @@ function returnToKerrostalo(){
 function createDemoTuloPoisto(){
     const proj = {
         id: genId(),
-        name: 'Demo: Tulo/Poisto Kerrostalo',
+        name: 'Demo: Kerrostalo (KTS/KSO)',
         systemType: 'kerrostalo',
         ducts: [],
         valves: [],
         machines: [],
         meta: { floorMap: {}, aptsPerFloor: 3 }
     };
-    // Luo 2 rappua (A, B), 3 kerrosta, 3 asuntoa/kerros
+    
     const letters = ['A','B'];
-    const floors = [1,2,3];
+    const floors = [1,2];
+    
+    const rnd = (target)=> Number((target + (Math.random()*4.0 - 2.0)).toFixed(1)); 
+    const rposT = ()=> Math.round(3 + Math.random()*5); // Tulo 3-8
+    const rposP = ()=> Math.round(-5 + Math.random()*10); // Poisto -5 ... 5
+    const rpa = ()=> Number((30 + Math.random()*40).toFixed(0));
+
     letters.forEach(L=>{
         floors.forEach(floor=>{
             for(let i=1;i<=proj.meta.aptsPerFloor;i++){
-                const aptCode = `${L}${floor}0${i}`; // esim. A101, A102, A103
+                const aptCode = `${L}${floor}0${i}`; 
                 proj.meta.floorMap[aptCode] = floor;
-                // AHU-kone per asunto (liitetään suoraan asuntokoodiin)
-                // Lisätään demoon myös koneen tulo/poisto tehoprosentti, jotta kokonaistulos voi jäädä vajaaksi
-                const supPct = 40 + Math.round(Math.random()*30); // 40-70%
-                const extPct = 40 + Math.round(Math.random()*30);
+                
+                const supPct = 50; 
+                const extPct = 50;
                 proj.machines.push({ id: genId(), type:'ahu', group:'apt', apartment:aptCode, name:`AHU ${aptCode}` , supPct, extPct });
-                // Tulo ja poisto kanavat per asunto
+                
                 const supplyId = genId();
                 const extractId = genId();
                 proj.ducts.push({ id: supplyId, type:'supply', group:'apt', apartment:aptCode, name:`Tulo ${aptCode}` });
                 proj.ducts.push({ id: extractId, type:'extract', group:'apt', apartment:aptCode, name:`Poisto ${aptCode}` });
-                // Venttiileitä (enemmän tuloja ja poistoja) eri avauksilla (pos) ja paineilla (measuredP)
-                // Tahallinen epätasapaino: virtaus usein pienempi kuin pyynti, avaukset matalampia
-                const rnd = (base)=> Number((base + (Math.random()*4.0 - 2.0)).toFixed(1)); // ±2.0 l/s heitto
-                const rpos = ()=> Math.round(10 + Math.random()*50); // 10-60% -> tarvitsee avausta
-                const rpa = ()=> Number((50 + Math.random()*50).toFixed(0)); // 50-100 Pa
-                // Tulo (3 kpl)
-                proj.valves.push({ id: genId(), parentDuctId: supplyId, dbKey:'c_dinoa', name:'Tulo DINO-A 125', room:'Olohuone', targetFlow: 8.0, flow: rnd(8.0), pos: rpos(), measuredP: rpa() });
-                proj.valves.push({ id: genId(), parentDuctId: supplyId, dbKey:'c_clik125', name:'Tulo CLIK 125', room:'Makuuhuone', targetFlow: 7.5, flow: rnd(7.5), pos: rpos(), measuredP: rpa() });
-                proj.valves.push({ id: genId(), parentDuctId: supplyId, dbKey:'c_rino100', name:'Tulo RINO 100', room:'Keittiö', targetFlow: 6.5, flow: rnd(6.5), pos: rpos(), measuredP: rpa() });
-                // Poisto (3 kpl)
-                proj.valves.push({ id: genId(), parentDuctId: extractId, dbKey:'h_kso125', name:'Poisto KSO 125', room:'WC', targetFlow: 9.0, flow: rnd(9.0), pos: rpos(), measuredP: rpa() });
-                proj.valves.push({ id: genId(), parentDuctId: extractId, dbKey:'l_ksu125', name:'Poisto KSU 125', room:'Pesuhuone', targetFlow: 8.5, flow: rnd(8.5), pos: rpos(), measuredP: rpa() });
-                proj.valves.push({ id: genId(), parentDuctId: extractId, dbKey:'c_elo100', name:'Poisto ELO 100', room:'Keittiö', targetFlow: 7.0, flow: rnd(7.0), pos: rpos(), measuredP: rpa() });
+                
+                // TULO: KTS-125
+                proj.valves.push({ id: genId(), parentDuctId: supplyId, type:'h_kts125', apartment:aptCode, name:'Tulo', room:'Olohuone', targetFlow: 15.0, flow: rnd(15.0), pos: rposT(), measuredP: rpa() });
+                proj.valves.push({ id: genId(), parentDuctId: supplyId, type:'h_kts125', apartment:aptCode, name:'Tulo', room:'Makuuhuone', targetFlow: 12.0, flow: rnd(12.0), pos: rposT(), measuredP: rpa() });
+                
+                // POISTO: KSO-125
+                proj.valves.push({ id: genId(), parentDuctId: extractId, type:'h_kso125', apartment:aptCode, name:'Poisto', room:'WC', targetFlow: 10.0, flow: rnd(10.0), pos: rposP(), measuredP: rpa() });
+                proj.valves.push({ id: genId(), parentDuctId: extractId, type:'h_kso125', apartment:aptCode, name:'Poisto', room:'KPH', targetFlow: 15.0, flow: rnd(15.0), pos: rposP(), measuredP: rpa() });
+                proj.valves.push({ id: genId(), parentDuctId: extractId, type:'h_kso125', apartment:aptCode, name:'Poisto', room:'Keittiö', targetFlow: 10.0, flow: rnd(10.0), pos: rposP(), measuredP: rpa() });
             }
         });
-        // Runkokanava (poisto) rappukohtaisesti tornin näyttöön
+        // Runkokanava
         proj.ducts.push({ id: genId(), type:'extract', group:'roof', name:`${L}-Rappu Poisto` });
     });
+    
     projects.push(proj);
     activeProjectId = proj.id;
     saveData();
     currentMode = 'visual';
     window._aptRappuFilter = null;
-    renderVisualContent();
+    
+    // Siirry suoraan visualisointiin
+    if (typeof showVisual === 'function') {
+        showVisual();
+    } else {
+        renderVisualContent();
+        showView('view-visual');
+    }
 }
 
 // Poista yksittäinen asunto (kerrostalo): poistaa sen apt-ductit, koneen ja siihen liittyvät venttiilit, sekä floorMap-merkinnän
@@ -868,48 +877,38 @@ saveData(); alert(`Tiedot kopioitu tilaan: ${targetMode}`);
 
 
 
-function createDemoProject() {
-    console.log('createDemoProject called');
-    const supId = Date.now()+1;
-    const extId = Date.now()+2;
-    const p = {
-        id: Date.now(),
-        name: "Demo: Tulo & Poisto",
-        systemType: 'ahu',
-        machines: [{ name: "Vallox 145 MV", type:'ahu', speed: "3", supPct: 55, extPct: 60, supQ: 120, extQ: 120 }],
-        ducts: [
-            { id: supId, type: 'supply', name: 'Tulo', flow: 0, size: 160 },
-            { id: extId, type: 'extract', name: 'Poisto', flow: 0, size: 160 }
-        ],
-        valves: [
-            // Tulo: A1/B1 huoneet
-            { room: "OH", apartment: "A1", type: "fresh125", target: 30, flow: 28.0, pos: 3, parentDuctId: supId },
-            { room: "MH", apartment: "A1", type: "fresh100", target: 15, flow: 14.0, pos: 2, parentDuctId: supId },
-            { room: "OH", apartment: "B1", type: "fresh125", target: 30, flow: 32.0, pos: 4, parentDuctId: supId },
-            { room: "MH", apartment: "B1", type: "fresh100", target: 15, flow: 13.5, pos: 2, parentDuctId: supId },
-            // Poisto: A1/B1 märkätilat
-            { room: "Keittiö", apartment: "A1", type: "h_kso125", target: 25, flow: 24.0, pos: 2, parentDuctId: extId },
-            { room: "WC", apartment: "A1", type: "h_kso100", target: 10, flow: 9.5, pos: 2, parentDuctId: extId },
-            { room: "KPH", apartment: "B1", type: "h_kso100", target: 15, flow: 14.0, pos: 3, parentDuctId: extId },
-            { room: "KHH", apartment: "B1", type: "h_kso100", target: 10, flow: 10.5, pos: 3, parentDuctId: extId }
-        ],
-        pressures: [
-            { name: "Ulko-ovi", val: -8 },
-            { name: "Postiluukku", val: -5 }
-        ],
-        meta: {},
-        modes: { home: {}, away: {}, boost: {} }
-    };
-    // Varmistetaan modes-rakenne
-    p.modes.home = { machines: JSON.parse(JSON.stringify(p.machines)), valves: JSON.parse(JSON.stringify(p.valves)) };
-    p.modes.away = { machines: [], valves: [] };
-    p.modes.boost = { machines: [], valves: [] };
-    projects.push(p);
-    saveData();
-    renderProjects();
-    openProject(p.id);
-    alert("Demo (Tulo & Poisto) luotu!");
+function createDemoHybrid(){
+    const p = { id: Date.now(), name: 'Demo Hybridi (Standard)', systemType: 'hybrid', ducts: [], valves: [], machines: [], meta: {} };
+    
+    const supId = Date.now()+11, extAhuId = Date.now()+12;
+    p.ducts.push({ id: supId, type: 'supply', name: 'AHU Tulo', size: 160, group:'ahu' });
+    p.ducts.push({ id: extAhuId, type: 'extract', name: 'AHU Poisto', size: 160, group:'ahu' });
+    
+    const roofExtId = Date.now()+13;
+    p.ducts.push({ id: roofExtId, type: 'extract', name: 'Huippuimuri Poisto', size: 200, group:'roof' });
+    
+    p.machines.push({ type:'ahu', name:'IV-Kone', supPct:50, extPct:50 });
+    
+    const rnd = (target) => Number((target + (Math.random() * 4.0 - 2.0)).toFixed(1));
+    const rpos = () => Math.round(2 + Math.random() * 8);
+    const rpa = () => Number((30 + Math.random() * 40).toFixed(0));
+
+    // AHU Venttiilit: Tulo (KTS-125) ja Poisto (KSO-125)
+    p.valves.push({ room:'OH (AHU)', type:'h_kts125', target:25, flow:rnd(20), pos:rpos(), measuredP:rpa(), parentDuctId: supId });
+    p.valves.push({ room:'MH (AHU)', type:'h_kts125', target:12, flow:rnd(10), pos:rpos(), measuredP:rpa(), parentDuctId: supId });
+    
+    p.valves.push({ room:'WC (AHU)', type:'h_kso125', target:10, flow:rnd(12), pos:rpos(), measuredP:rpa(), parentDuctId: extAhuId });
+    p.valves.push({ room:'KPH (AHU)', type:'h_kso125', target:15, flow:rnd(18), pos:rpos(), measuredP:rpa(), parentDuctId: extAhuId });
+
+    // Huippuimuri Venttiilit: Vain KSO-125
+    p.valves.push({ apartment:'B1', room:'Keittiö', type:'h_kso125', target:20, flow:rnd(15), pos:rpos(), measuredP:rpa(), parentDuctId: roofExtId });
+    p.valves.push({ apartment:'B2', room:'Keittiö', type:'h_kso125', target:20, flow:rnd(25), pos:rpos(), measuredP:rpa(), parentDuctId: roofExtId });
+
+    projects.push(p); saveData(); renderProjects(); activeProjectId = p.id; 
+    if (typeof openProject === 'function') openProject(p.id); else { try { window.openProject(p.id); } catch(e) {} } 
+    alert('Demo Hybridi luotu');
 }
+ 
 
 function confirmCreateProject() {
     console.log('confirmCreateProject called');
@@ -1768,89 +1767,141 @@ function setApartmentFloorPrompt(p, apt) {
                     return { P_duct: P_duct, totalFlow: actualFlow, flows: flows };
                 }
 
-                // Korvaa vanha suggestValveAdjustments -funktio fysikaalisella mallilla (tarkka loppuasento)
-                function suggestValveAdjustments(p, ducts, valves){
+                // script.js (Korvaa suggestValveAdjustments-funktio tällä uudella versiolla)
+                function suggestValveAdjustments(p, ducts, valves) {
                     const suggestions = [];
                     const ductMap = {};
-                    
+
+                    // Ryhmitellään venttiilit runkojen mukaan
                     valves.forEach((v, i) => {
                         if (!v.parentDuctId) return;
                         if (!ductMap[v.parentDuctId]) ductMap[v.parentDuctId] = [];
-                        v._idx = i; // Tärkeä indeksi taulukkoviittaukseen
+                        v._idx = i;
                         ductMap[v.parentDuctId].push(v);
                     });
 
                     for (const ductId in ductMap) {
                         const ductValves = ductMap[ductId];
+                        // Lasketaan nykytilanne (paine ja virtaukset)
                         const currentSim = calculateDuctFlowAndPressure(p, ductId, ductValves);
-                        
-                        // 1. Etsi venttiili, joka tarvitsee eniten säätöä (virhe > 10%)
+
+                        // Etsitään venttiilit, joiden virhe on yli 1%
                         const adjustmentCandidates = ductValves
                             .map(v => {
                                 const target = parseFloat(v.targetFlow || v.target || 0) || 0;
-                                const flow = currentSim.flows[v._idx] || 0; 
+                                const flow = currentSim.flows[v._idx] || 0;
                                 if (target === 0 || flow === 0) return null;
                                 const relError = (target - flow) / (target || 1);
+                                // Tarvittava K-arvo tavoitteeseen nykypaineella
                                 const K_req = currentSim.P_duct > 0 ? target / Math.sqrt(currentSim.P_duct) : 0;
-                                return { v, relError, K_req, flow, target, P_duct: currentSim.P_duct };
+                                return { v, relError, K_req, flow, target };
                             })
-                            .filter(x => x !== null && Math.abs(x.relError) > 0.10)
-                            .sort((a, b) => Math.abs(b.relError) - Math.abs(a.relError)); 
+                            .filter(x => x !== null && Math.abs(x.relError) > 0.01) // Virhe > 1%
+                            .sort((a, b) => Math.abs(b.relError) - Math.abs(a.relError)); // Järjestetään pahin ensin
 
                         const worstValve = adjustmentCandidates[0];
-                        if (worstValve) { 
-                            const { v } = worstValve;
+
+                        if (worstValve) {
+                            const { v, K_req, relError, target, flow } = worstValve;
                             const currentPos = parseFloat(v.pos || 0);
-                            let deltaPos = 0;
-                            const step = worstValve.relError > 0 ? 1 : -1; 
+
+                            // 1. Haetaan venttiilikohtaiset rajat tietokannasta
+                            let minPos = -20, maxPos = 100;
+                            let isReverse = false; // Tunnistetaan käänteiset venttiilit
                             
-                            // Simulaatio: etsi uusi asento, joka tuottaa K_req:n (käyttäen 0-100 avausasteikkoa)
-                            for (let j = 0; j < 100; j++) { 
-                                const testPos = currentPos + deltaPos;
-                                const testK = defaultGetK(v.type, testPos);
+                            if (window.valveDB && window.valveDB[v.type]) {
+                                const data = window.valveDB[v.type].data;
+                                if (data && data.length > 0) {
+                                    minPos = data[0][0];
+                                    maxPos = data[data.length - 1][0];
+                                    // Tarkistetaan nouseeko vai laskeeko K-arvo asennon kasvaessa
+                                    if (data.length > 1 && data[0][1] > data[data.length - 1][1]) {
+                                        isReverse = true;
+                                    }
+                                }
+                            }
+
+                            // 2. Määritetään säätösuunta
+                            const needMoreFlow = relError > 0; // Tarvitaan lisää virtausta
+                            const step = (needMoreFlow !== isReverse) ? 1 : -1;
+                            
+                            // 3. Etsitään paras asento rajojen sisältä
+                            let bestPos = currentPos;
+                            let bestKDiff = Math.abs(((typeof defaultGetK === 'function' ? defaultGetK(v.type, currentPos) : 0)) - K_req);
+                            
+                            // Skannataan asentoja suuntaan "step" kunnes raja tulee vastaan tai tulos huononee
+                            let testPos = currentPos;
+                            for(let i=0; i<200; i++) { 
+                                testPos += step; 
                                 
-                                if (Math.abs(testK - worstValve.K_req) < worstValve.K_req * 0.05) {
-                                    break;
-                                }
-                                if ((testK < worstValve.K_req && step > 0) || (testK > worstValve.K_req && step < 0)) {
-                                    deltaPos += step;
+                                // Pysähdytään jos mennään rajojen yli
+                                if (testPos < minPos || testPos > maxPos) break;
+                                
+                                const testK = (typeof defaultGetK === 'function') ? defaultGetK(v.type, testPos) : 0;
+                                const diff = Math.abs(testK - K_req);
+                                
+                                // Jos uusi asento on parempi, tallennetaan se
+                                if (diff < bestKDiff) {
+                                    bestKDiff = diff;
+                                    bestPos = testPos;
                                 } else {
+                                    // Jos tulos alkaa huonontua (mentiin optimaalisen ohi), lopetetaan
                                     break;
                                 }
-                                if (testPos <= 0 || testPos >= 100) break;
                             }
                             
-                            const newPos = Math.max(0, Math.min(100, currentPos + deltaPos));
-                            
-                            suggestions.push({
-                                idx: v._idx,
-                                room: v.room,
-                                target: worstValve.target,
-                                flow: worstValve.flow,
-                                deltaPos: Math.round(newPos - currentPos),
-                                finalPos: Math.round(newPos),
-                                simulatedP: currentSim.P_duct,
-                                parentDuctId: ductId,
-                                simFlow: defaultGetK(v.type, newPos) * Math.sqrt(Math.max(0, currentSim.P_duct)),
-                                originalPos: currentPos,
-                                type: 'valve'
-                            });
-                        }
+                            // Varmistus
+                            bestPos = Math.max(minPos, Math.min(maxPos, bestPos));
 
-                        // 2. Koneen säätö (opastus)
-                        const ductTotalTarget = ductValves.reduce((a,v)=>a+(parseFloat(v.targetFlow||v.target||0)||0), 0);
-                        if (currentSim.totalFlow < ductTotalTarget * 0.95 && currentSim.P_duct < 95) { 
-                            suggestions.push({
-                                idx: -1, 
-                                room: `Runko: ${(p.ducts||[]).find(d=>d.id==ductId)?.name || 'Nimetön'}`,
-                                target: ductTotalTarget,
-                                flow: currentSim.totalFlow,
-                                deltaPos: null,
-                                simulatedP: currentSim.P_duct,
-                                parentDuctId: ductId,
-                                type: 'machine',
-                                advice: 'Virtaus alhainen. Nosta puhallinnopeutta (AHU/Roof Fan).'
-                            });
+                            // 4. Luodaan ehdotus venttiilille (jos asento muuttuu)
+                            if (bestPos !== currentPos) {
+                                const newK = (typeof defaultGetK === 'function') ? defaultGetK(v.type, bestPos) : 0;
+                                const newSimFlow = newK * Math.sqrt(Math.max(0, currentSim.P_duct));
+                                
+                                suggestions.push({
+                                    idx: v._idx,
+                                    room: v.room,
+                                    target: target,
+                                    flow: flow,
+                                    deltaPos: Math.round(bestPos - currentPos),
+                                    finalPos: Math.round(bestPos),
+                                    simulatedP: currentSim.P_duct,
+                                    parentDuctId: ductId,
+                                    simFlow: newSimFlow,
+                                    type: 'valve'
+                                });
+                            }
+
+                            // 5. TARKISTUS: Tarvitaanko koneen/paineen säätöä?
+                            const finalK = (typeof defaultGetK === 'function') ? defaultGetK(v.type, bestPos) : 0;
+                            const finalFlow = finalK * Math.sqrt(Math.max(0, currentSim.P_duct));
+                            
+                            const isFullyOpen = (!isReverse && bestPos >= maxPos) || (isReverse && bestPos <= minPos);
+                            const isFullyClosed = (!isReverse && bestPos <= minPos) || (isReverse && bestPos >= maxPos);
+                            
+                            if (needMoreFlow && isFullyOpen && finalFlow < target * 0.95) {
+                                suggestions.push({
+                                    idx: -1, 
+                                    room: `Runko: ${(p.ducts||[]).find(d=>d.id==ductId)?.name || 'Nimetön'}`,
+                                    target: target,
+                                    flow: currentSim.totalFlow,
+                                    simulatedP: currentSim.P_duct,
+                                    parentDuctId: ductId,
+                                    type: 'machine',
+                                    advice: `Nosta nopeutta/painetta (Venttiili '${v.room}' on täysin auki [${bestPos}] eikä riitä)`
+                                });
+                            } else if (!needMoreFlow && isFullyClosed && finalFlow > target * 1.05) {
+                                suggestions.push({
+                                    idx: -1, 
+                                    room: `Runko: ${(p.ducts||[]).find(d=>d.id==ductId)?.name || 'Nimetön'}`,
+                                    target: target,
+                                    flow: currentSim.totalFlow,
+                                    simulatedP: currentSim.P_duct,
+                                    parentDuctId: ductId,
+                                    type: 'machine',
+                                    advice: `Laske nopeutta/painetta (Venttiili '${v.room}' on täysin kiinni [${bestPos}] ja virtaa liikaa)`
+                                });
+                            }
                         }
                     }
                     
@@ -3043,40 +3094,57 @@ function buildReportData(){
 
 // Erillinen AHU-demo
 function createDemoAHU(){
-    const p = { id: Date.now(), name: 'Demo AHU', systemType: 'ahu', ducts: [], valves: [], machines: [], meta: {} };
+    const p = { id: Date.now(), name: 'Demo AHU (KTS/KSO)', systemType: 'ahu', ducts: [], valves: [], machines: [], meta: {} };
     const supId = Date.now()+1, extId = Date.now()+2;
+    
     p.ducts.push({ id: supId, type: 'supply', name: 'Tulo', size: 160, group:'ahu' });
     p.ducts.push({ id: extId, type: 'extract', name: 'Poisto', size: 160, group:'ahu' });
     p.machines.push({ type:'ahu', name:'IV-Kone', supPct:50, extPct:50 });
-    // AHU venttiilit: tahallinen epätasapaino
-    const rnd = (base)=> Number((base + (Math.random()*4.0 - 2.0)).toFixed(1)); // ±2.0 l/s
-    const rpos = ()=> Math.round(10 + Math.random()*50); // 10-60%
-    const rpa = ()=> Number((50 + Math.random()*50).toFixed(0)); // 50-100 Pa
-    p.valves.push({ room:'Olohuone', type:'fresh125', target:30, flow:rnd(30), pos:rpos(), measuredP:rpa(), parentDuctId: supId });
-    p.valves.push({ room:'Makuuhuone', type:'fresh100', target:15, flow:rnd(15), pos:rpos(), measuredP:rpa(), parentDuctId: supId });
-    p.valves.push({ room:'Työhuone', type:'c_dinoa', target:12, flow:rnd(12), pos:rpos(), measuredP:rpa(), parentDuctId: supId });
-    p.valves.push({ room:'Keittiö', type:'c_clik125', target:18, flow:rnd(18), pos:rpos(), measuredP:rpa(), parentDuctId: supId });
-    p.valves.push({ room:'WC', type:'h_kso100', target:10, flow:rnd(10), pos:rpos(), measuredP:rpa(), parentDuctId: extId });
-    p.valves.push({ room:'KPH', type:'h_kso125', target:20, flow:rnd(20), pos:rpos(), measuredP:rpa(), parentDuctId: extId });
-    p.valves.push({ room:'Keittiö', type:'c_elo100', target:14, flow:rnd(14), pos:rpos(), measuredP:rpa(), parentDuctId: extId });
-    p.valves.push({ room:'Siivous', type:'l_ksu125', target:8, flow:rnd(8), pos:rpos(), measuredP:rpa(), parentDuctId: extId });
-    projects.push(p); saveData(); renderProjects(); activeProjectId = p.id; if (typeof openProject === 'function') openProject(p.id); else { try { window.openProject(p.id); } catch(e) {} } alert('Demo AHU luotu');
+    
+    const rnd = (target) => Number((target + (Math.random() * 6.0 - 3.0)).toFixed(1));
+    const rpos = () => Math.round(2 + Math.random() * 8);
+    const rpa = () => Number((30 + Math.random() * 40).toFixed(0));
+    
+    // TULO: KTS-125
+    p.valves.push({ room:'Olohuone', type:'h_kts125', target:20, flow:rnd(15), pos:rpos(), measuredP:rpa(), parentDuctId: supId });
+    p.valves.push({ room:'Makuuhuone 1', type:'h_kts125', target:12, flow:rnd(8), pos:rpos(), measuredP:rpa(), parentDuctId: supId });
+    p.valves.push({ room:'Makuuhuone 2', type:'h_kts125', target:12, flow:rnd(8), pos:rpos(), measuredP:rpa(), parentDuctId: supId });
+    
+    // POISTO: KSO-125
+    p.valves.push({ room:'Keittiö', type:'h_kso125', target:20, flow:rnd(25), pos:rpos(), measuredP:rpa(), parentDuctId: extId });
+    p.valves.push({ room:'KPH', type:'h_kso125', target:15, flow:rnd(18), pos:rpos(), measuredP:rpa(), parentDuctId: extId });
+    p.valves.push({ room:'WC', type:'h_kso125', target:10, flow:rnd(12), pos:rpos(), measuredP:rpa(), parentDuctId: extId });
+    p.valves.push({ room:'VH', type:'h_kso125', target:8, flow:rnd(10), pos:rpos(), measuredP:rpa(), parentDuctId: extId });
+
+    projects.push(p); saveData(); renderProjects(); activeProjectId = p.id; 
+    if (typeof openProject === 'function') openProject(p.id); else { try { window.openProject(p.id); } catch(e) {} } 
+    alert('Demo AHU luotu (Venttiilit: KTS-125 & KSO-125)');
 }
 
 // Erillinen Huippuimuri-demo
 function createDemoRoof(){
-    const p = { id: Date.now(), name: 'Demo Huippuimuri', systemType: 'roof', ducts: [], valves: [], machines: [], meta: {} };
+    const p = { id: Date.now(), name: 'Demo Huippuimuri (KSO)', systemType: 'roof', ducts: [], valves: [], machines: [], meta: {} };
     const extId = Date.now()+3;
-    p.ducts.push({ id: extId, type: 'extract', name: 'A-Rappu Poisto', size: 160, group:'roof' });
-    // Tornin venttiilit: tahallinen epätasapaino
-    const rndR = (base)=> Number((base + (Math.random()*4.0 - 2.0)).toFixed(1));
-    const rposR = ()=> Math.round(10 + Math.random()*50);
-    const rpaR = ()=> Number((50 + Math.random()*50).toFixed(0));
-    p.valves.push({ apartment:'A1', room:'Keittiö', type:'h_kso125', target:25, flow:rndR(25), pos:rposR(), measuredP:rpaR(), parentDuctId: extId });
-    p.valves.push({ apartment:'A2', room:'KPH', type:'h_kso100', target:15, flow:rndR(15), pos:rposR(), measuredP:rpaR(), parentDuctId: extId });
-    p.valves.push({ apartment:'A3', room:'WC', type:'h_kso100', target:10, flow:rndR(10), pos:rposR(), measuredP:rpaR(), parentDuctId: extId });
-    p.valves.push({ apartment:'A4', room:'Siivous', type:'l_ksu125', target:12, flow:rndR(12), pos:rposR(), measuredP:rpaR(), parentDuctId: extId });
-    projects.push(p); saveData(); renderProjects(); activeProjectId = p.id; if (typeof openProject === 'function') openProject(p.id); else { try { window.openProject(p.id); } catch(e) {} } alert('Demo Huippuimuri luotu');
+    
+    p.ducts.push({ id: extId, type: 'extract', name: 'A-Rappu Poisto', size: 200, group:'roof' });
+    
+    const rnd = (target) => Number((target + (Math.random() * 5.0 - 2.5)).toFixed(1));
+    const rpos = () => Math.round(-5 + Math.random() * 10); // KSO voi olla miinuksella (-5 ... 5)
+    const rpa = () => Number((40 + Math.random() * 30).toFixed(0));
+
+    // POISTO: Vain KSO-125
+    p.valves.push({ apartment:'A1', room:'Keittiö', type:'h_kso125', target:20, flow:rnd(15), pos:rpos(), measuredP:rpa(), parentDuctId: extId });
+    p.valves.push({ apartment:'A1', room:'KPH', type:'h_kso125', target:15, flow:rnd(10), pos:rpos(), measuredP:rpa(), parentDuctId: extId });
+    
+    p.valves.push({ apartment:'A2', room:'Keittiö', type:'h_kso125', target:20, flow:rnd(22), pos:rpos(), measuredP:rpa(), parentDuctId: extId });
+    p.valves.push({ apartment:'A2', room:'KPH', type:'h_kso125', target:15, flow:rnd(18), pos:rpos(), measuredP:rpa(), parentDuctId: extId });
+
+    p.valves.push({ apartment:'A3', room:'Keittiö', type:'h_kso125', target:20, flow:rnd(12), pos:rpos(), measuredP:rpa(), parentDuctId: extId });
+    p.valves.push({ apartment:'A3', room:'KPH', type:'h_kso125', target:15, flow:rnd(8), pos:rpos(), measuredP:rpa(), parentDuctId: extId });
+
+    projects.push(p); saveData(); renderProjects(); activeProjectId = p.id; 
+    if (typeof openProject === 'function') openProject(p.id); else { try { window.openProject(p.id); } catch(e) {} } 
+    alert('Demo Huippuimuri luotu (Venttiilit: KSO-125)');
 }
 
 // Tulosta AHU-pöytäkirja
