@@ -1,3 +1,11 @@
+// Turvallinen kaavion näyttö -nappi: kutsuu showChart jos olemassa
+function showChartFallback() {
+    if (window.showChart && typeof window.showChart === 'function') {
+        try { window.showChart(); } catch (e) { alert('Kaavion avaaminen epäonnistui: ' + e.message); }
+    } else {
+        alert('Kaavion näyttö ei ole vielä käytettävissä.');
+    }
+}
 let projects = JSON.parse(localStorage.getItem('iv_projects')) || [];
 
 let activeProjectId = null;
@@ -15,6 +23,7 @@ let editingMachineIndex = null;
 let editingDuctId = null;
 
 let currentMode = 'home';
+let activeApartmentId = null; // For per-apartment AHU viewing
 
 let signaturePad = null; // Canvas context
 
@@ -29,6 +38,150 @@ if (!p.meta) p.meta = {};
 if (!p.modes) { p.modes = { home: { machines: JSON.parse(JSON.stringify(p.machines)), valves: JSON.parse(JSON.stringify(p.valves)) }, away: { machines: [], valves: [] }, boost: { machines: [], valves: [] } }; }
 
 });
+
+// Yleinen ID-generaattori
+function genId(){
+    return Math.floor(Date.now() + Math.random()*100000);
+}
+
+function returnToKerrostalo(){
+    activeApartmentId = null;
+    renderVisualContent();
+}
+
+// Demo: Tulo/Poisto kerrostalo, luo raput, kerrokset, asunnot, kanavat, venttiilit ja AHU:t
+function createDemoTuloPoisto(){
+    const proj = {
+        id: genId(),
+        name: 'Demo: Tulo/Poisto Kerrostalo',
+        systemType: 'kerrostalo',
+        ducts: [],
+        valves: [],
+        machines: [],
+        meta: { floorMap: {}, aptsPerFloor: 3 }
+    };
+    // Luo 2 rappua (A, B), 3 kerrosta, 3 asuntoa/kerros
+    const letters = ['A','B'];
+    const floors = [1,2,3];
+    letters.forEach(L=>{
+        floors.forEach(floor=>{
+            for(let i=1;i<=proj.meta.aptsPerFloor;i++){
+                const aptCode = `${L}${floor}0${i}`; // esim. A101, A102, A103
+                proj.meta.floorMap[aptCode] = floor;
+                // AHU-kone per asunto (liitetään suoraan asuntokoodiin)
+                // Lisätään demoon myös koneen tulo/poisto tehoprosentti, jotta kokonaistulos voi jäädä vajaaksi
+                const supPct = 40 + Math.round(Math.random()*30); // 40-70%
+                const extPct = 40 + Math.round(Math.random()*30);
+                proj.machines.push({ id: genId(), type:'ahu', group:'apt', apartment:aptCode, name:`AHU ${aptCode}` , supPct, extPct });
+                // Tulo ja poisto kanavat per asunto
+                const supplyId = genId();
+                const extractId = genId();
+                proj.ducts.push({ id: supplyId, type:'supply', group:'apt', apartment:aptCode, name:`Tulo ${aptCode}` });
+                proj.ducts.push({ id: extractId, type:'extract', group:'apt', apartment:aptCode, name:`Poisto ${aptCode}` });
+                // Venttiileitä (enemmän tuloja ja poistoja) eri avauksilla (pos) ja paineilla (measuredP)
+                const rnd = (base)=> Number((base + (Math.random()*1.6 - 0.8)).toFixed(1)); // ±0.8 l/s
+                const rpos = ()=> Math.round(20 + Math.random()*60); // avaus % ~20-80
+                const rpa = ()=> Number((20 + Math.random()*80).toFixed(0)); // Pa ~20-100
+                // Tulo (3 kpl)
+                proj.valves.push({ id: genId(), parentDuctId: supplyId, dbKey:'c_dinoa', name:'Tulo DINO-A 125', room:'Olohuone', targetFlow: 8.0, flow: rnd(8.0), pos: rpos(), measuredP: rpa() });
+                proj.valves.push({ id: genId(), parentDuctId: supplyId, dbKey:'c_clik125', name:'Tulo CLIK 125', room:'Makuuhuone', targetFlow: 7.5, flow: rnd(7.5), pos: rpos(), measuredP: rpa() });
+                proj.valves.push({ id: genId(), parentDuctId: supplyId, dbKey:'c_rino100', name:'Tulo RINO 100', room:'Keittiö', targetFlow: 6.5, flow: rnd(6.5), pos: rpos(), measuredP: rpa() });
+                // Poisto (3 kpl)
+                proj.valves.push({ id: genId(), parentDuctId: extractId, dbKey:'h_kso125', name:'Poisto KSO 125', room:'WC', targetFlow: 9.0, flow: rnd(9.0), pos: rpos(), measuredP: rpa() });
+                proj.valves.push({ id: genId(), parentDuctId: extractId, dbKey:'l_ksu125', name:'Poisto KSU 125', room:'Pesuhuone', targetFlow: 8.5, flow: rnd(8.5), pos: rpos(), measuredP: rpa() });
+                proj.valves.push({ id: genId(), parentDuctId: extractId, dbKey:'c_elo100', name:'Poisto ELO 100', room:'Keittiö', targetFlow: 7.0, flow: rnd(7.0), pos: rpos(), measuredP: rpa() });
+            }
+        });
+        // Runkokanava (poisto) rappukohtaisesti tornin näyttöön
+        proj.ducts.push({ id: genId(), type:'extract', group:'roof', name:`${L}-Rappu Poisto` });
+    });
+    projects.push(proj);
+    activeProjectId = proj.id;
+    saveData();
+    currentMode = 'visual';
+    window._aptRappuFilter = null;
+    renderVisualContent();
+}
+
+// Poista yksittäinen asunto (kerrostalo): poistaa sen apt-ductit, koneen ja siihen liittyvät venttiilit, sekä floorMap-merkinnän
+function deleteApartment(aptCode){
+    const p = projects.find(x => x.id === activeProjectId); if(!p) return;
+    if(!confirm(`Poistetaanko asunto ${aptCode}?`)) return;
+    const aptDuctIds = (p.ducts||[]).filter(d=> d.group==='apt' && d.apartment===aptCode).map(d=>d.id);
+    p.valves = (p.valves||[]).filter(v=> !aptDuctIds.includes(v.parentDuctId));
+    p.ducts = (p.ducts||[]).filter(d=> !(d.group==='apt' && d.apartment===aptCode));
+    p.machines = (p.machines||[]).filter(m=> !(m.type==='ahu' && m.apartment===aptCode));
+    if(p.meta && p.meta.floorMap){ delete p.meta.floorMap[aptCode]; }
+    saveData(); renderVisualContent();
+}
+
+    // Poista koko rappu kerrostalo-näkymässä (poistaa kaikki asunnot ko. kirjaimella)
+    function deleteKerrostaloRappu(letter) {
+        const p = projects.find(x => x.id === activeProjectId); if(!p) return;
+        const l = String(letter).toUpperCase();
+        if (!confirm(`Poistetaanko koko rappu ${l}? Kaikki tämän rapun asunnot poistetaan.`)) return;
+        const floorMap = (p.meta && p.meta.floorMap) ? p.meta.floorMap : {};
+        const apts = Object.keys(floorMap);
+        const toDeleteAptCodes = apts.filter(a=> a.toUpperCase().startsWith(l));
+        // Poista venttiilit, kanavat ja koneet ko. asunnoilta
+        const aptDuctIds = (p.ducts||[])
+            .filter(d=> d.group==='apt' && toDeleteAptCodes.includes(String(d.apartment)))
+            .map(d=> d.id);
+        p.valves = (p.valves||[]).filter(v=> !aptDuctIds.includes(v.parentDuctId));
+        p.ducts = (p.ducts||[]).filter(d=> !(d.group==='apt' && toDeleteAptCodes.includes(String(d.apartment))));
+        p.machines = (p.machines||[]).filter(m=> !(m.type==='ahu' && toDeleteAptCodes.includes(String(m.apartment))));
+        // Poista avaimet floorMapista
+        toDeleteAptCodes.forEach(k=>{ delete floorMap[k]; });
+        saveData();
+        renderVisualContent();
+    }
+
+    // Nimeä rappu (vaihda kirjainta), päivittää kaikki avaimet ja komponenttien apartment-kentän
+    function renameKerrostaloRappu(oldLetter) {
+        const p = projects.find(x => x.id === activeProjectId); if(!p) return;
+        const oldL = String(oldLetter).toUpperCase();
+        const newL = prompt(`Uusi rapun kirjain (nykyinen ${oldL})`, oldL);
+        if (!newL) return;
+        const targetL = String(newL).toUpperCase();
+        if (targetL===oldL) return;
+        const floorMap = (p.meta && p.meta.floorMap) ? p.meta.floorMap : {};
+        const existing = Object.keys(floorMap).some(k=>k.startsWith(targetL+':'));
+        if (existing && !confirm(`Rappu ${targetL} on jo olemassa. Jatketaanko ja yhdistetään asunnot samaan rappuun?`)) return;
+        // päivitä floorMap-avaimet
+        const updatedFloorMap = {};
+        Object.entries(floorMap).forEach(([key, aptId])=>{
+            const [aptCode, floorStr] = key.split(':');
+            if (aptCode.toUpperCase()===oldL) {
+                const newKey = `${targetL}:${floorStr}`;
+                updatedFloorMap[newKey] = aptId;
+            } else {
+                updatedFloorMap[key] = aptId;
+            }
+        });
+        if (!p.meta) p.meta = {};
+        p.meta.floorMap = updatedFloorMap;
+        // päivitä komponenttien apartment-kenttä
+        (p.ducts||[]).forEach(d=>{
+            if (d.group==='apt' && String(d.apartment||'').toUpperCase()===oldL) d.apartment = targetL;
+        });
+        (p.machines||[]).forEach(m=>{
+            if (m.type==='ahu' && String(m.apartment||'').toUpperCase()===oldL) m.apartment = targetL;
+        });
+        saveData();
+        window._aptRappuFilter = targetL;
+        renderVisualContent();
+    }
+
+// Poista rappu (huippuimuri): poistaa rungon sekä siihen liitetyt venttiilit
+function deleteRappu(ductId){
+    const p = projects.find(x => x.id === activeProjectId); if(!p) return;
+    const duct = (p.ducts||[]).find(d=> d.id===ductId);
+    if(!duct) return;
+    if(!confirm(`Poistetaanko rappu/runkokanava '${duct.name||''}'?`)) return;
+    p.valves = (p.valves||[]).filter(v=> v.parentDuctId !== ductId);
+    p.ducts = (p.ducts||[]).filter(d=> d.id !== ductId);
+    saveData(); renderVisualContent();
+}
 
 
 // --- TÄYDELLINEN VENTTIILIDATA (V60: Ultimate Database) ---
@@ -612,6 +765,9 @@ function showVisual() {
         if (btns) btns.innerHTML = `
             <button class="btn btn-secondary" style="margin:0; padding:5px 10px; font-size:12px;" onclick="setVisualMode('vertical')">🏢 Pysty</button>
             <button class="btn btn-secondary" style="margin:0; padding:5px 10px; font-size:12px;" onclick="setVisualMode('horizontal')">🏠 Vaaka</button>`;
+    } else if (sys === 'kerrostalo') {
+        window.activeVisMode = 'vertical';
+        if (btns) btns.innerHTML = `<button class="btn btn-secondary" style="margin:0; padding:5px 10px; font-size:12px;" onclick="setVisualMode('vertical')">🏢 Kerrostalo</button>`;
     } else {
         window.activeVisMode = 'horizontal';
         if (btns) btns.innerHTML = `<button class="btn btn-secondary" style="margin:0; padding:5px 10px; font-size:12px;" onclick="setVisualMode('horizontal')">🏠 Vaaka</button>`;
@@ -807,6 +963,10 @@ function openProject(id) {
     renderDetailsList();
     showView('view-details');
 }
+
+// Varmista globaalit viittaukset onclick-kutsuille
+window.openProject = openProject;
+window.showView = showView;
 
 function renderDetailsList() {
     // Tämä funktio päivittää projektin tiedot näkymään
@@ -1033,14 +1193,38 @@ function showNewProjectModal() {
     document.getElementById('newProjectModal').style.display = 'flex';
 }
 function closeModal() {
-    document.getElementById('newProjectModal').style.display = 'none';
-    // Tyhjennä kentät
-    document.getElementById('newProjName').value = '';
-    document.getElementById('newProjType').value = 'ahu';
+    // Sulje uuden projektin modal, jos auki
+    const npm = document.getElementById('newProjectModal');
+    if (npm) {
+        npm.style.display = 'none';
+        const n1 = document.getElementById('newProjName'); if(n1) n1.value='';
+        const n2 = document.getElementById('newProjType'); if(n2) n2.value='ahu';
+    }
+    // Sulje generinen overlay-modal, jos auki
+    const ov = document.getElementById('generic-modal-overlay');
+    if (ov) { ov.style.display = 'none'; ov.innerHTML=''; }
+}
+
+// Yleiskäyttöinen modal-avaaja dynaamiselle sisällölle
+function openModal(html) {
+    let ov = document.getElementById('generic-modal-overlay');
+    if (!ov) {
+        ov = document.createElement('div');
+        ov.id = 'generic-modal-overlay';
+        ov.className = 'modal-overlay';
+        document.body.appendChild(ov);
+    }
+    ov.innerHTML = `<div class="modal">${html}</div>`;
+    ov.style.display = 'flex';
 }
 
 function saveData() {
     localStorage.setItem('iv_projects', JSON.stringify(projects));
+}
+
+// Yhteensopivuus: jotkin kohdat kutsuvat saveProjects()
+function saveProjects(){
+    try { saveData(); } catch(e) {}
 }
 
 function renderVisualContent() {
@@ -1066,6 +1250,18 @@ function renderVisualContent() {
             roofBar.innerHTML = `<span style="font-size:12px; color:#555;">Suodatin: Näytetään vain rappu</span>
                                  <button class="btn btn-secondary" style="margin:0; padding:4px 8px; font-size:12px;" onclick="clearTowerFilter()">Näytä kaikki raput</button>`;
         }
+        // Lisää kerrostalon luonti -nappi pystynäkymän yläpalkkiin (vain kerrostalo)
+        const p2 = projects.find(x => x.id === activeProjectId);
+        if (p2 && p2.systemType === 'kerrostalo') {
+            roofBar.innerHTML += `<button class="btn btn-secondary" style="margin-left:8px; padding:4px 8px; font-size:12px;" onclick="openCreateAptAHUModal()">+ Luo asuntoja (AHU)</button>`;
+            if (activeApartmentId) {
+                roofBar.innerHTML += `<button class="btn btn-secondary" style="margin-left:8px; padding:4px 8px; font-size:12px; background:#2196F3; color:#fff; border-color:#1976D2;" onclick="returnToKerrostalo()">← Takaisin kerrostaloon</button>`;
+            }
+        } else if (p2 && p2.systemType === 'roof') {
+            // Huippuimuri-projekteissa: lisää pikapainikkeet poistoon
+            roofBar.innerHTML += `<button class="btn btn-secondary" style="margin-left:8px; padding:4px 8px; font-size:12px;" onclick="openAddRoofFansModal()">+ Lisää poisto (rappu)</button>`;
+            roofBar.innerHTML += `<button class="btn btn-secondary" style="margin-left:8px; padding:4px 8px; font-size:12px;" onclick="openAddAptsForFanModal()">+ Lisää poisto (asunto)</button>`;
+        }
     }
 
     const mode = window.activeVisMode || 'vertical';
@@ -1086,8 +1282,9 @@ function renderVisualContent() {
 function renderVerticalStackInto(container, p) {
     const ducts = p.ducts || [];
     const valves = p.valves || [];
-    // Näytä pystynäkymässä vain huippuimurin poistokanavat (group==='roof')
-    let shafts = ducts.filter(d => d.type === 'extract' && (d.group === 'roof'));
+    // Kerrostalo: näytä asunnot kerroksittain; Roof: tornit; muuten oletus roof
+    const isApt = (p.systemType === 'kerrostalo');
+    let shafts = isApt ? ducts.filter(d => d.group==='apt') : ducts.filter(d => d.type === 'extract' && (d.group === 'roof'));
     const totalShafts = shafts.length;
     if (window._visTowerFilter) {
         const one = shafts.find(s => s.id === window._visTowerFilter);
@@ -1105,6 +1302,127 @@ function renderVerticalStackInto(container, p) {
 
     const APTS_PER_FLOOR = (p.meta && parseInt(p.meta.aptsPerFloor)) || 3;
 
+    // Tab-palkki rappuille, näkyy aina ja näyttää rappujen määrän
+    const tabbar = document.createElement('div');
+    tabbar.style.cssText = 'display:flex; gap:6px; align-items:center; margin:6px 0; flex-wrap:wrap; justify-content:flex-start;';
+    const alph = getFinnishAlphabet();
+    const allRoof = ducts.filter(d => d.type === 'extract' && (d.group === 'roof'));
+    const letters = isApt ? [] : Array.from(new Set(allRoof.map(s=> (s.name||'').trim().charAt(0).toUpperCase()).filter(Boolean))).sort((a,b)=>alph.indexOf(a)-alph.indexOf(b));
+    letters.forEach(L => {
+        const b = document.createElement('button');
+        b.className = 'btn btn-secondary';
+        b.textContent = L;
+        b.onclick = () => {
+            const target = allRoof.find(s=> (s.name||'').toUpperCase().startsWith(L));
+            if(target) filterTower(target.id);
+        };
+        const active = window._visTowerFilter && (allRoof.find(s=> s.id===window._visTowerFilter)?.name||'').toUpperCase().startsWith(L);
+        if (active) {
+            b.style.background = '#2196F3';
+            b.style.color = '#fff';
+            b.style.borderColor = '#1976D2';
+        }
+        tabbar.appendChild(b);
+    });
+    container.appendChild(tabbar);
+
+    if (isApt) {
+        // Kerrostalo: ryhmittele asunnot kerroksittain p.meta.floorMap:n perusteella ja renderöi laatikot
+        const floorMap = (p.meta && p.meta.floorMap) || {};
+        const apts = Object.keys(floorMap);
+        // Rappu-välilehdet (A, B, C ... Å Ä Ö) kerrostalossa
+        const alphKT = getFinnishAlphabet();
+        const rappuLettersKT = Array.from(new Set(apts.map(a=> (a.match(/^[A-Za-zÅÄÖåäö]+/)||[''])[0].toUpperCase()).filter(Boolean))).sort((a,b)=>alphKT.indexOf(a)-alphKT.indexOf(b));
+        const tabbarKT = document.createElement('div');
+        tabbarKT.style.cssText = 'display:flex; gap:6px; align-items:center; margin:6px 0; flex-wrap:wrap; justify-content:flex-start;';
+        rappuLettersKT.forEach(L => {
+            const b = document.createElement('button');
+            b.className = 'btn btn-secondary';
+            b.textContent = L;
+            b.onclick = () => { window._aptRappuFilter = L; renderVisualContent(); };
+            if (window._aptRappuFilter === L) { b.style.background = '#2196F3'; b.style.color = '#fff'; b.style.borderColor = '#1976D2'; }
+            tabbarKT.appendChild(b);
+        });
+        container.appendChild(tabbarKT);
+        // Bulk-poisto rappukohtaisesti, kun suodatin on päällä
+        if (window._aptRappuFilter) {
+            const bulkBar = document.createElement('div');
+            bulkBar.style.cssText = 'display:flex; gap:8px; align-items:center; margin:8px 0;';
+            const info = document.createElement('span'); info.textContent = `Rappu ${window._aptRappuFilter} — toiminnot:`;
+            const bulkDeleteBtn = document.createElement('button');
+            bulkDeleteBtn.className = 'btn btn-danger';
+            bulkDeleteBtn.textContent = '🗑️ Poista kaikki tämän rapun asunnot';
+            bulkDeleteBtn.onclick = (e)=>{ e.stopPropagation(); deleteKerrostaloRappu(window._aptRappuFilter); };
+            bulkBar.appendChild(info);
+            bulkBar.appendChild(bulkDeleteBtn);
+            container.appendChild(bulkBar);
+        }
+
+        const floors = Array.from(new Set(apts
+            .filter(a=> !window._aptRappuFilter || a.toUpperCase().startsWith(window._aptRappuFilter))
+            .map(a=>floorMap[a]))).sort((a,b)=>a-b);
+        const tower = document.createElement('div');
+        tower.className = 'vis-tower';
+        const head = document.createElement('div'); head.className='vis-tower-head';
+        const currentRappu = window._aptRappuFilter || null;
+        head.innerHTML = `${currentRappu ? 'Kerrostalo — Rappu '+currentRappu : 'Kerrostalo'}`;
+        // Nimeä rappu (kerrostalo-suodatin) uudelleen: vaihtaa kirjaimen ja päivittää kaikki ko. asunnot
+        if (currentRappu) {
+            const renameBtnKT = document.createElement('button');
+            renameBtnKT.className = 'btn btn-secondary';
+            renameBtnKT.style.cssText = 'margin-left:6px; padding:2px 6px; font-size:11px;';
+            renameBtnKT.textContent = '✏️ Nimeä rappu';
+            renameBtnKT.onclick = (e)=>{ e.stopPropagation(); renameKerrostaloRappu(currentRappu); };
+            head.appendChild(renameBtnKT);
+            const delRappuBtnKT = document.createElement('button');
+            delRappuBtnKT.className = 'btn btn-secondary';
+            delRappuBtnKT.style.cssText = 'margin-left:6px; padding:2px 6px; font-size:11px;';
+            delRappuBtnKT.textContent = '🗑️ Poista rappu';
+            delRappuBtnKT.onclick = (e)=>{ e.stopPropagation(); deleteKerrostaloRappu(currentRappu); };
+            head.appendChild(delRappuBtnKT);
+        }
+        tower.appendChild(head);
+        // Lisätään väli, jotta putkilinjat eivät peitä otsikon tai nappien päältä
+        const headSpacer = document.createElement('div');
+        headSpacer.style.cssText = 'height:14px;';
+        tower.appendChild(headSpacer);
+        const shaftLine = document.createElement('div'); shaftLine.className='vis-shaft-line'; tower.appendChild(shaftLine);
+        const floorsContainer = document.createElement('div'); floorsContainer.className='vis-floors-container'; tower.appendChild(floorsContainer);
+        floors.forEach(floorNum=>{
+            const floorEl=document.createElement('div'); floorEl.className='vis-floor'; floorEl.setAttribute('data-floor-label', `${floorNum}. krs`);
+            const floorApts = apts.filter(a=>floorMap[a]===floorNum && (!window._aptRappuFilter || a.toUpperCase().startsWith(window._aptRappuFilter))).sort();
+            floorApts.forEach(aptCode=>{
+                const aptEl=document.createElement('div'); aptEl.className='vis-apt';
+                // Väri-koodaus: arvioi venttiilien flow vs targetFlow
+                const aptDucts = (p.ducts||[]).filter(d=> d.group==='apt' && d.apartment===aptCode);
+                const aptValveList = (p.valves||[]).filter(v=> aptDucts.some(d=> d.id===v.parentDuctId));
+                let statusClass='ok';
+                if (aptValveList.length>0){
+                    const diffs = aptValveList.map(v=>{
+                        const t = parseFloat(v.targetFlow||v.target||0); const f = parseFloat(v.flow||0);
+                        if(!t || !f) return null; const rel = Math.abs(f-t)/(t||1);
+                        return rel;
+                    }).filter(x=> x!==null);
+                    const worst = diffs.length? Math.max(...diffs) : null;
+                    if (worst===null){ statusClass='none'; }
+                    else if (worst < 0.10){ statusClass='ok'; }
+                    else if (worst < 0.15){ statusClass='warn'; }
+                    else { statusClass='err'; }
+                } else { statusClass='none'; }
+                aptEl.setAttribute('data-status', statusClass);
+                const bg = statusClass==='ok'?'#d6f5d6': statusClass==='warn'?'#fff3cd': statusClass==='err'?'#fde2e1':'#f1f1f1';
+                aptEl.style.background = bg;
+                aptEl.innerHTML = `<div class=\"apt-head\"><span>${aptCode}</span>
+                    <button class=\"list-action-btn\" title=\"Poista asunto\" onclick=\"event.stopPropagation();deleteApartment('${aptCode}')\">🗑️</button>
+                </div>`;
+                aptEl.onclick = (e)=>{ e.stopPropagation(); activeApartmentId = aptCode; renderHorizontalMap(container); };
+                floorEl.appendChild(aptEl);
+            });
+            floorsContainer.appendChild(floorEl);
+        });
+        container.appendChild(tower);
+        return;
+    }
     shafts.forEach(shaft => {
         // Torni
         const tower = document.createElement('div');
@@ -1126,6 +1444,21 @@ function renderVerticalStackInto(container, p) {
         head.style.border = `1px solid ${colors.br}`;
         head.style.borderRadius = '8px';
         head.style.padding = '4px 8px';
+        // Rappunimen muokkaus
+        const renameBtn = document.createElement('button');
+        renameBtn.className = 'btn btn-secondary';
+        renameBtn.style.cssText = 'margin-left:6px; padding:2px 6px; font-size:11px;';
+        renameBtn.textContent = '✏️ Nimeä uudelleen';
+        renameBtn.onclick = (e) => { e.stopPropagation(); renameRappu(shaft.id); };
+        head.appendChild(renameBtn);
+        // Poista rappu (poistaa rungon ja siihen liittyvät venttiilit)
+        const delRappuBtn = document.createElement('button');
+        delRappuBtn.className = 'btn btn-secondary';
+        delRappuBtn.style.cssText = 'margin-left:6px; padding:2px 6px; font-size:12px; line-height:1;';
+        delRappuBtn.title = 'Poista rappu';
+        delRappuBtn.textContent = '🗑️ Rappu';
+        delRappuBtn.onclick = (e) => { e.stopPropagation(); deleteRappu(shaft.id); };
+        head.appendChild(delRappuBtn);
         // Pikanapit: Poista runko, ja "Vain tämä" -nappi, jos useampi rappu ja ei jo suodatettu
         const delBtn = document.createElement('button');
         delBtn.className = 'btn btn-secondary';
@@ -1143,8 +1476,26 @@ function renderVerticalStackInto(container, p) {
         addBtn.onclick = (e) => { e.stopPropagation(); quickAddValveToDuct(shaft.id); };
         head.appendChild(addBtn);
 
-        // Näytä "Vain tämä" -nappi...
-        if (totalShafts > 1 && !window._visTowerFilter) {
+        // Lisää Asunto -nappi (avataan yksinkertainen modal: Rappu, Kerros, Määrä)
+        const addSimpleAptBtn = document.createElement('button');
+        addSimpleAptBtn.className = 'btn btn-secondary';
+        addSimpleAptBtn.style.cssText = 'margin-left:6px; padding:2px 6px; font-size:11px;';
+        addSimpleAptBtn.textContent = '+ Lisää Asunto';
+        addSimpleAptBtn.onclick = (e) => { e.stopPropagation(); openAddAptsForFanModal(); };
+        head.appendChild(addSimpleAptBtn);
+
+        // Lisää huippuimureita (massa) nappi pystynäkymään asuntojen viereen
+        const addFansBtn = document.createElement('button');
+        addFansBtn.className = 'btn btn-secondary';
+        addFansBtn.style.cssText = 'margin-left:6px; padding:2px 6px; font-size:11px;';
+        addFansBtn.textContent = '+ Lisää huippuimureita';
+        addFansBtn.onclick = (e) => { e.stopPropagation(); openAddRoofFansModal(); };
+        head.appendChild(addFansBtn);
+
+        // Poistettu pyynnöstä: ei näytetä rikkinäistä "Lisää asuntoja"-nappia pystynäkymässä
+
+        // Lisää "Näytä vain" -nappi suodatukseen
+        if (totalShafts > 1) {
             const onlyBtn = document.createElement('button');
             onlyBtn.className = 'btn btn-secondary';
             onlyBtn.style.cssText = 'margin-left:6px; padding:2px 6px; font-size:11px;';
@@ -1156,7 +1507,7 @@ function renderVerticalStackInto(container, p) {
         const roofUnit = document.createElement('div');
         roofUnit.className = 'vis-roof-unit';
         const sumExtract = (p.valves||[]).filter(v=>v.parentDuctId==shaft.id).reduce((a,b)=>a+(parseFloat(b.flow)||0),0);
-        roofUnit.innerHTML = `<div style="font-size:20px;">⚙️</div><b>Huippuimuri</b><div class="sum">Σ Poisto ${sumExtract.toFixed(1)} l/s</div>`;
+        roofUnit.innerHTML = `<div style="font-size:20px;">⚙️</div><b>Huippuimuri</b><div class="sum">= Poisto ${sumExtract.toFixed(1)} l/s</div>`;
         roofUnit.onclick = () => editMachine(0);
         tower.appendChild(roofUnit);
         // Otsikko heti huippuimurin alla
@@ -1215,7 +1566,7 @@ function renderVerticalStackInto(container, p) {
                                 : (ratio < 0.10 ? 'vis-status-ok' : 'vis-status-err');
                             const box = document.createElement('div');
                             box.className = `vis-apt ${statusClass}`;
-                            box.innerHTML = `<div class="apt-tooltip">Σ ${data.totalQ.toFixed(1)} / ${data.targetQ.toFixed(1)} l/s</div><b>${apt}</b><br>${data.totalQ.toFixed(1)} / ${data.targetQ.toFixed(1)}`;
+                            box.innerHTML = `<div class="apt-tooltip">= ${data.totalQ.toFixed(1)} / ${data.targetQ.toFixed(1)} l/s</div><b>${apt}</b><br>${data.totalQ.toFixed(1)} / ${data.targetQ.toFixed(1)}`;
                             box.onclick = () => showApartmentModal(apt, shaft.id);
                             floorDiv.appendChild(box);
                         });
@@ -1238,7 +1589,7 @@ function renderVerticalStackInto(container, p) {
                             : (ratio < 0.10 ? 'vis-status-ok' : 'vis-status-err');
                         const box = document.createElement('div');
                         box.className = `vis-apt ${statusClass}`;
-                        box.innerHTML = `<div class="apt-tooltip">Σ ${data.totalQ.toFixed(1)} / ${data.targetQ.toFixed(1)} l/s</div><b>${apt}</b><br>${data.totalQ.toFixed(1)} / ${data.targetQ.toFixed(1)}`;
+                        box.innerHTML = `<div class="apt-tooltip">= ${data.totalQ.toFixed(1)} / ${data.targetQ.toFixed(1)} l/s</div><b>${apt}</b><br>${data.totalQ.toFixed(1)} / ${data.targetQ.toFixed(1)}`;
                         box.onclick = () => showApartmentModal(apt, shaft.id);
                         floorDiv.appendChild(box);
                     });
@@ -1274,15 +1625,26 @@ function setApartmentFloorPrompt(p, apt) {
                 function renderHorizontalMap(container) {
                     const p = projects.find(x => x.id === activeProjectId);
                     if (!p) { container.innerHTML = ''; return; }
-                    const ahu = (p.machines || []).find(m => m.type === 'ahu') || {name: (p.machines && p.machines[0]?.name) || 'IV-Kone', supPct: (p.machines && p.machines[0]?.supPct) };
+                    // If viewing apartment-level AHU, filter by activeApartmentId
+                    const viewingApt = activeApartmentId || null;
+                    // Back button when viewing specific apartment
+                    container.innerHTML = '';
+                    if (viewingApt) {
+                        const backBar = document.createElement('div');
+                        backBar.style.cssText = 'display:flex; align-items:center; gap:8px; margin:6px 0;';
+                        backBar.innerHTML = `<button class="btn btn-secondary" style="padding:4px 8px; font-size:12px; background:#2196F3; color:#fff; border-color:#1976D2;" onclick="returnToKerrostalo()">← Takaisin kerrostaloon</button>
+                                             <span style="font-size:12px; color:#555;">Asunto ${viewingApt}</span>`;
+                        container.appendChild(backBar);
+                    }
+                    const ahu = (p.machines || []).find(m => m.type === 'ahu' && (!viewingApt || m.apartment === viewingApt)) || {name: (p.machines && p.machines[0]?.name) || 'IV-Kone', supPct: (p.machines && p.machines[0]?.supPct) };
                     // Näytä vaakanäkymässä vain AHU-kanavat (group==='ahu')
-                    const supplies = (p.ducts || []).filter(d => d.type === 'supply' && (d.group === 'ahu'));
-                    const extracts = (p.ducts || []).filter(d => d.type === 'extract' && (d.group === 'ahu'));
+                    const supplies = (p.ducts || []).filter(d => d.type === 'supply' && ((d.group === 'ahu') || (viewingApt && d.group==='apt' && d.apartment===viewingApt)));
+                    const extracts = (p.ducts || []).filter(d => d.type === 'extract' && ((d.group === 'ahu') || (viewingApt && d.group==='apt' && d.apartment===viewingApt)));
                     const sumSupply = (p.valves||[]).filter(v=> supplies.some(d=>d.id===v.parentDuctId)).reduce((a,b)=>a+(parseFloat(b.flow)||0),0);
                     const sumExtract = (p.valves||[]).filter(v=> extracts.some(d=>d.id===v.parentDuctId)).reduce((a,b)=>a+(parseFloat(b.flow)||0),0);
 
                     let html = `<div class="ahu-layout">`;
-                    html += `<div class="ahu-unit" onclick="editMachine(0)">
+                                        html += `<div class="ahu-unit" onclick="editMachine(0)">
                                 <div style="font-size:20px;">⚙️</div>
                                 <b>${ahu.name || 'IV-Kone'}</b>
                                 <div style="font-size:10px; margin-top:5px;">Tulo: ${ahu.supPct || 0}%</div>
@@ -1290,9 +1652,10 @@ function setApartmentFloorPrompt(p, apt) {
                           html += `<div class="ahu-manifold">`;
                           // Order toggle bar (global for both areas)
                           html += `<div class="ahu-orderbar">
-                                          <span class="badge supply">Σ Tulo ${sumSupply.toFixed(1)} l/s</span>
-                                          <span class="badge extract">Σ Poisto ${sumExtract.toFixed(1)} l/s</span>
+                                          <span class="badge supply">= Tulo ${sumSupply.toFixed(1)} l/s</span>
+                                          <span class="badge extract">= Poisto ${sumExtract.toFixed(1)} l/s</span>
                                           <button class="btn-order" onclick="toggleValveOrder()">Järjestys: ${getValveOrderLabel()}</button>
+                                          <button class="btn-order" onclick="openRelativeAdjustPanel()">Ehdota suhteellista säätöä</button>
                                       </div>`;
                     html += `<div class="ahu-area">
                                 <div class="ahu-area-title">Tulo</div>
@@ -1309,12 +1672,422 @@ function setApartmentFloorPrompt(p, apt) {
                     html += `</div>`; // manifold
                     html += `</div>`; // layout
 
-                    container.innerHTML = html;
+                    container.innerHTML += html;
                 }
 
-                // Apufunktio haaran piirtämiseen
-                function createBranchHTML(p, duct, colorName) {
-                    let valves = (p.valves || []).filter(v => v.parentDuctId == duct.id);
+                // Suhteellinen säätö: ehdottaa pieniä muutoksia venttiilien avaukseen
+                function openRelativeAdjustPanel(){
+                    const p = projects.find(x => x.id === activeProjectId); if(!p) return;
+                    const viewingApt = activeApartmentId || null;
+                    const relevantDucts = (p.ducts||[]).filter(d=> (d.type==='supply'||d.type==='extract') && (!viewingApt || (d.group==='apt' && d.apartment===viewingApt)));
+                    const valves = (p.valves||[]).filter(v=> relevantDucts.some(d=> d.id===v.parentDuctId));
+                    const suggestions = suggestValveAdjustments(p, relevantDucts, valves);
+                    if (!suggestions.length) { alert('Ei ehdotuksia. Venttiilit jo lähellä pyyntiä.'); return; }
+                    showRelativeAdjustModal(p, suggestions);
+                }
+
+                function suggestValveAdjustments(p, ducts, valves){
+                    // Kevyt heuristiikka: laske suhteellinen virhe ja ehdota Δpos pienin askelin, huomioi kytkeytyminen 10% heuristiikalla
+                    const res=[]; const alpha=0.2; const coupling=0.1;
+                    const totalFlow = valves.reduce((a,v)=> a + (parseFloat(v.flow)||0), 0);
+                    valves.forEach((v,i)=>{
+                        const target = parseFloat(v.targetFlow||v.target||0) || 0; const flow = parseFloat(v.flow||0) || 0;
+                        if (!target || !flow) return;
+                        const rel = (target - flow)/(target||1);
+                        const baseDelta = Math.round(alpha * rel * 100); // prosenttiyksiköitä
+                        // Simuloitu vaikutus: oma muutos + naapuriin kytkeytyvä painevaikutus
+                        const neighborImpact = valves.filter((_,j)=> j!==i).reduce((acc,nv)=>{
+                            const nf = parseFloat(nv.flow||0)||0; return acc + coupling * (nf/(totalFlow||1));
+                        },0);
+                        const simFlow = flow + rel*target*0.5 - neighborImpact*flow*0.2; // karkea ennuste
+                        res.push({ idx:i, room:v.room, target:target, deltaPos: baseDelta, direction: baseDelta>=0?1:-1, simFlow, parentDuctId: v.parentDuctId });
+                    });
+                    return res;
+                }
+
+                function showRelativeAdjustModal(p, suggestions){
+                    // Luo modaalin sisällön
+                    const overlay = document.createElement('div'); overlay.className='modal-overlay'; overlay.style.display='flex';
+                    const box = document.createElement('div'); box.className='modal';
+                          box.innerHTML = `<div class="modal-header">Suhteellinen säätö — ehdotukset</div>
+                                                 <div class="modal-content">
+                                                     <div style="font-size:12px;color:#555;margin-bottom:8px;">Symboli = käytetään summana. Käytämme "=" Tulo/Poisto l/s arvioimaan kokonaisvirtaa vs. pyyntiä.</div>
+                                        <table class="report" style="margin-top:4px;">
+                                            <thead><tr><th>Huone</th><th>Pyynti (l/s)</th><th>Mitattu (l/s)</th><th>Δ avaus (%)</th><th>Simuloitu Q (l/s)</th></tr></thead>
+                                            <tbody>
+                                                ${suggestions.map(s=>{
+                                                    const v = (p.valves||[])[s.idx] || {};
+                                                    const flow = parseFloat(v.flow||0)||0;
+                                                    return `<tr><td>${s.room||'Huone'}</td><td>${s.target.toFixed(1)}</td><td>${flow.toFixed(1)}</td><td>${s.direction>0?'+':''}${s.deltaPos}</td><td>${s.simFlow.toFixed(1)}</td></tr>`;
+                                                }).join('')}
+                                            </tbody>
+                                        </table>
+                                     </div>
+                                     <div class="modal-actions">
+                                        <button class="btn btn-secondary" onclick="(function(){document.body.removeChild(document.querySelector('.modal-overlay'));})()">Peruuta</button>
+                                        <button class="btn btn-primary" onclick="(function(){ window.applySuggestedAdjustments && applySuggestedAdjustments(); })()">Hyväksy muutokset</button>
+                                     </div>`;
+                    overlay.appendChild(box);
+                    document.body.appendChild(overlay);
+                    // Talleta ehdotukset globaalisti hetkeksi
+                    window._lastValveSuggestions = suggestions;
+                    window.applySuggestedAdjustments = function(){
+                        const p2 = projects.find(x => x.id === activeProjectId); if(!p2) return;
+                        (window._lastValveSuggestions||[]).forEach(s=>{
+                            const v = (p2.valves||[])[s.idx]; if (!v) return;
+                            const cur = Math.round(parseFloat(v.pos||0)||0);
+                            v.pos = Math.max(0, Math.min(100, cur + s.deltaPos));
+                        });
+                        // Tarkista koneen teho: jos = Tulo < = Pyynti selvästi, ehdota nostoa
+                        const viewingApt = activeApartmentId || null;
+                        const supplies = (p2.ducts||[]).filter(d=> d.type==='supply' && (!viewingApt || (d.group==='apt' && d.apartment===viewingApt)));
+                        const valvesSup = (p2.valves||[]).filter(v=> supplies.some(d=> d.id===v.parentDuctId));
+                        const sumTarget = valvesSup.reduce((a,v)=> a + (parseFloat(v.targetFlow||v.target||0)||0), 0);
+                        const sumFlow = valvesSup.reduce((a,v)=> a + (parseFloat(v.flow||0)||0), 0);
+                        if (sumFlow < 0.9*sumTarget) {
+                            alert(`Vinkki: = Tulo ${sumFlow.toFixed(1)} l/s < = Pyynti ${sumTarget.toFixed(1)} l/s. Nosta koneen tulo-tehoa (supPct).`);
+                        }
+                        try { saveData(); } catch(e) {}
+                        renderVisualContent();
+                        // Sulje modal
+                        if (document.querySelector('.modal-overlay')) document.body.removeChild(document.querySelector('.modal-overlay'));
+                    }
+                }
+
+                // Pienen haaran HTML tulo/poisto -vaakanäkymään
+                function createBranchHTML(p, duct, colorName){
+                    const valves = (p.valves||[]).filter(v => v.parentDuctId === duct.id && !v.apartment);
+                    const order = (p.meta && p.meta.valveOrder && Array.isArray(p.meta.valveOrder[duct.id])) ? p.meta.valveOrder[duct.id] : [];
+                    const mapIndex = v => p.valves.indexOf(v);
+                    valves.sort((a,b)=>{
+                        const ia = order.indexOf(mapIndex(a));
+                        const ib = order.indexOf(mapIndex(b));
+                        if (ia !== -1 && ib !== -1) return ia - ib;
+                        const mode = window._valveSortKey || 'room';
+                        if (mode === 'room') return (a.room||'').localeCompare(b.room||'');
+                        if (mode === 'flow') return (parseFloat(a.flow)||0) - (parseFloat(b.flow)||0);
+                        if (mode === 'pos') return (parseFloat(a.pos)||0) - (parseFloat(b.pos)||0);
+                        return 0;
+                    });
+                    const valveCount = Math.max(1, valves.length);
+                    const branchTitle = duct.name || (duct.type==='supply' ? 'Tulo' : 'Poisto');
+                    const colorHex = colorName === 'blue' ? '#2196F3' : '#e91e63';
+                    const paValues = valves.map(v => parseFloat(v.measuredP)).filter(x => !isNaN(x));
+                    const paMin = paValues.length ? Math.min(...paValues).toFixed(1) : '-';
+                    const paMax = paValues.length ? Math.max(...paValues).toFixed(1) : '-';
+                    const sumFlow = valves.reduce((acc, v) => acc + (parseFloat(v.flow)||0), 0).toFixed(1);
+                    const header = `<div class="branch-head" style="border-color:${colorHex};"><b>${branchTitle}</b><span class="sum">= ${sumFlow} l/s</span><span class="pa">Pa: ${paMin}…${paMax}</span></div>`;
+                    const taps = valves.map((v,i)=>{
+                        const idx = p.valves.indexOf(v);
+                        const flow = parseFloat(v.flow)||0;
+                        const pos = (v.pos !== undefined && v.pos !== null) ? v.pos : '-';
+                        const pa = (v.measuredP !== undefined && v.measuredP !== null) ? v.measuredP : '-';
+                        const room = v.room || 'Huone';
+                        const target = (parseFloat(v.targetFlow)||parseFloat(v.target)||0);
+                        const hasMeasurement = target>0 && flow>0;
+                        const diff = Math.abs(flow - target);
+                        let status = 'none';
+                        if (hasMeasurement) {
+                            const rel = diff / (target || 1);
+                            if (rel < 0.10) status = 'ok';
+                            else if (rel < 0.15) status = 'warn';
+                            else status = 'err';
+                        }
+                        const leftPct = ((i+1)/(valveCount+1))*100;
+                        return `<div class="tap ${status}" style="left:${leftPct}%" onclick="event.stopPropagation();openValvePanel(${idx})">
+                                    <div class="tap-label">
+                                        <b>${room}</b> • ${flow.toFixed(1)} l/s${target?` / ${target.toFixed ? target.toFixed(1) : target}`:''}${pa!=='-'?` • ${pa} Pa`:''}${pos!=='-'?` • Avaus ${Math.round(pos)}`:''}
+                                        <button class="list-action-btn" title="Siirrä vasemmalle" style="margin-left:6px; font-size:14px; color:#666;" onclick="event.stopPropagation();moveValveInDuct(${duct.id}, ${idx}, -1)">◀</button>
+                                        <button class="list-action-btn" title="Siirrä oikealle" style="margin-left:2px; font-size:14px; color:#666;" onclick="event.stopPropagation();moveValveInDuct(${duct.id}, ${idx}, 1)">▶</button>
+                                        <button class="list-action-btn" title="Poista venttiili" style="margin-left:6px; font-size:14px; color:#bbb;" onclick="event.stopPropagation();deleteValveByIndex(${idx})">🗑️</button>
+                                        <button class="list-action-btn" title="Lisää vaihtoehdot" style="margin-left:6px; font-size:14px; color:#999;" onclick="event.stopPropagation();showValveMenu(${idx})">⋮</button>
+                                    </div>
+                                </div>`;
+                    }).join('');
+                    return `<div class="branch" data-duct="${duct.id}">${header}<div class="branch-line" style="background:${colorHex}"></div><div class="branch-taps">${taps}</div></div>`;
+                }
+
+                                // Lisää huippuimuri(t) - valintamodaali
+                                function openAddRoofFansModal(){
+                                        const p = projects.find(x => x.id === activeProjectId);
+                                        if(!p) return;
+                                        const roofDucts = (p.ducts||[]).filter(d=> d.group==='roof' && d.type==='extract');
+                                    const letters = Array.from(new Set(roofDucts.map(d=> (d.name||'').trim().charAt(0).toUpperCase()).filter(Boolean)));
+                                    const nextLetter = nextAlphabetLetter(letters);
+                                        const html = `
+                                                <div style="padding:8px;">
+                                                    <h3>Lisää huippuimureita</h3>
+                                                    <label>Alkukirjain:</label>
+                                                    <input id="fanStartLetter" type="text" value="${nextLetter}" maxlength="1" style="width:40px;"> 
+                                                    <label style="margin-left:8px;">Määrä:</label>
+                                                    <select id="fanCount" class="input input-sm" style="width:100px;">
+                                                        ${[1,2,3,4,5,6,7,8,9,10].map(n=>`<option value="${n}">${n}</option>`).join('')}
+                                                    </select>
+                                                    <div style="margin-top:10px;">
+                                                        <button class="btn btn-primary" onclick="confirmAddRoofFans()">Lisää</button>
+                                                        <button class="btn btn-secondary" onclick="closeModal()">Peruuta</button>
+                                                    </div>
+                                                </div>`;
+                                        openModal(html);
+                                }
+
+                                function confirmAddRoofFans(){
+                                        const p = projects.find(x => x.id === activeProjectId);
+                                        if(!p) { closeModal(); return; }
+                                        if(!p.machines) p.machines = [];
+                                        if(!p.ducts) p.ducts = [];
+                                    const start = (document.getElementById('fanStartLetter').value||'A').toUpperCase();
+                                        const count = Math.max(1, parseInt(document.getElementById('fanCount').value||'1'));
+                                    const alph = getFinnishAlphabet();
+                                    let idx = alph.indexOf(start); if(idx<0) idx = 0;
+                                    for(let i=0;i<count;i++){
+                                        const letter = alph[(idx + i) % alph.length];
+                                                const name = `${letter} Rappu Poisto`;
+                                                // Luo huippuimuri laite
+                                                p.machines.push({ name: `Huippuimuri ${letter}`, type: 'roof_fan', speed: '1' });
+                                                // Luo kattopoiston runko, jos puuttuu
+                                                const exists = (p.ducts||[]).some(d=> d.group==='roof' && d.type==='extract' && (d.name||'').toUpperCase().startsWith(letter));
+                                                if(!exists){ p.ducts.push({ id: genId(), name, type: 'extract', group: 'roof', size: 160, flow: 0 }); }
+                                        }
+                                        saveProjects(); closeModal(); renderVisualContent();
+                                }
+
+                // Palaa aktiiviseen projektiin
+                function getCurrentProject(){
+                    return (projects||[]).find(x => x.id === activeProjectId);
+                }
+
+                // Luo kerrostalo-asunnot: start floor, floor count, per-floor count, creates per-apartment AHU ducts/machine
+                function openCreateAptAHUModal(){
+                    const p = projects.find(x => x.id === activeProjectId); if(!p) return;
+                    const alph = getFinnishAlphabet();
+                    const letterOpts = alph.map(l=>`<option value="${l}">${l}</option>`).join('');
+                    const html = `
+                        <div style="padding:8px;">
+                            <h3>Kerrostalo: Luo asuntoja</h3>
+                            <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+                                <label>Rappu:
+                                    <select id="aptRappuKH" class="input input-sm" style="width:100px;">${letterOpts}</select>
+                                </label>
+                                <label>Alkukerros:
+                                    <input id="aptStartFloorKH" type="number" value="1" min="-3" max="99" style="width:90px;">
+                                </label>
+                                <label>Kerrosmäärä:
+                                    <input id="aptFloorCountKH" type="number" value="3" min="1" max="99" style="width:110px;">
+                                </label>
+                                <label>Asuntoja / kerros:
+                                    <input id="aptPerFloorKH" type="number" value="2" min="1" max="20" style="width:130px;">
+                                </label>
+                            </div>
+                            <div style="margin-top:10px;">
+                                <button class="btn btn-primary" onclick="confirmCreateAptAHU()">Luo</button>
+                                <button class="btn btn-secondary" onclick="closeModal()">Peruuta</button>
+                            </div>
+                        </div>`;
+                    openModal(html);
+                }
+                function confirmCreateAptAHU(){
+                    const p = projects.find(x => x.id === activeProjectId); if(!p){ closeModal(); return; }
+                    const rappu = (document.getElementById('aptRappuKH')?.value||'A').toUpperCase();
+                    const startFloor = parseInt(document.getElementById('aptStartFloorKH')?.value||'1',10);
+                    const floorCount = Math.max(1, parseInt(document.getElementById('aptFloorCountKH')?.value||'1',10));
+                    const perFloor = Math.max(1, parseInt(document.getElementById('aptPerFloorKH')?.value||'1',10));
+                    if(!p.meta) p.meta={}; if(!p.meta.floorMap) p.meta.floorMap={};
+                    for(let f=0; f<floorCount; f++){
+                        const floor = startFloor + f;
+                        for(let i=1; i<=perFloor; i++){
+                            const aptCode = `${rappu}${floor}${i}`;
+                            // Create per-apartment AHU ducts and machine
+                            const supId = genId(), extId = genId();
+                            p.ducts.push({ id: supId, type: 'supply', name: `Tulo ${aptCode}`, size: 125, group:'apt', apartment: aptCode });
+                            p.ducts.push({ id: extId, type: 'extract', name: `Poisto ${aptCode}`, size: 125, group:'apt', apartment: aptCode });
+                            p.machines.push({ type:'ahu', name:`IV-Kone ${aptCode}`, supPct:50, extPct:50, apartment: aptCode });
+                            p.meta.floorMap[aptCode] = floor;
+                        }
+                    }
+                    saveProjects(); closeModal(); renderVisualContent();
+                }
+
+                function returnToKerrostalo(){ activeApartmentId = null; setVisualMode('vertical'); renderVisualContent(); }
+
+                                // Luo yhden huippuimurin alle monta asuntoa kerralla
+                                function openAddAptsForFanModal(){
+                                        const p = projects.find(x => x.id === activeProjectId); if(!p) return;
+                                        const roofDucts = (p.ducts||[]).filter(d=> d.group==='roof' && d.type==='extract');
+                                        const rappuLetters = Array.from(new Set(roofDucts.map(d=> (d.name||'').trim().charAt(0).toUpperCase()).filter(Boolean))).sort();
+                                        const letterOpts = rappuLetters.length? rappuLetters.map(l=>`<option value="${l}">${l}</option>`).join('') : '<option value="">-</option>';
+                                        const html = `
+                                            <div style="padding:8px;">
+                                                <h3>Lisää asuntoja</h3>
+                                                <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+                                                    <label>Rappu:
+                                                        <select id="aptFanRappu" class="input input-sm" style="width:100px;">${letterOpts}</select>
+                                                    </label>
+                                                    <label>Alkukerros:
+                                                        <input id="aptStartFloor" type="number" value="1" min="-3" max="99" style="width:90px;">
+                                                    </label>
+                                                    <label>Kerrosmäärä:
+                                                        <input id="aptFloorCount" type="number" value="1" min="1" max="99" style="width:110px;">
+                                                    </label>
+                                                    <label>Määrä / kerros:
+                                                        <input id="aptPerFloorCount" type="number" value="3" min="1" max="200" style="width:130px;">
+                                                    </label>
+                                                </div>
+                                                <div style="margin-top:10px;">
+                                                    <button class="btn btn-primary" onclick="confirmAddAptsForFan()">Lisää</button>
+                                                    <button class="btn btn-secondary" onclick="closeModal()">Peruuta</button>
+                                                </div>
+                                            </div>`;
+                                        openModal(html);
+                                }
+
+                                function confirmAddAptsForFan(){
+                                        const p = projects.find(x => x.id === activeProjectId); if(!p) { closeModal(); return; }
+                                        const rap = (document.getElementById('aptFanRappu')?.value||'').toUpperCase();
+                                        const startFloor = parseInt(document.getElementById('aptStartFloor')?.value||'1',10);
+                                        const floorCount = Math.max(1, parseInt(document.getElementById('aptFloorCount')?.value||'1',10));
+                                        const perFloor = Math.max(1, parseInt(document.getElementById('aptPerFloorCount')?.value||'1',10));
+                                        const duct = (p.ducts||[]).find(d=> d.group==='roof' && d.type==='extract' && (d.name||'').toUpperCase().startsWith(rap));
+                                        if(!duct){ alert('Valittu rappu puuttuu.'); return; }
+                                        p.valves = p.valves||[];
+                                        if(!p.meta) p.meta={}; if(!p.meta.floorMap) p.meta.floorMap={};
+                                        for(let f=0; f<floorCount; f++){
+                                            const floor = startFloor + f;
+                                            for(let i=1; i<=perFloor; i++){
+                                                const apt = `${rap}${floor}${i}`;
+                                                p.valves.push({ id: genId(), parentDuctId: duct.id, apartment: apt, room: 'Asunto', flow: 0, target: 0 });
+                                                p.meta.floorMap[apt] = floor;
+                                            }
+                                        }
+                                        saveProjects(); closeModal(); renderVisualContent();
+                                }
+
+                function openCreateRaputModal(){
+                    const p = getCurrentProject();
+                    const existingLetters = (p.ducts||[]).filter(d=>d.group==='roof').map(d=>{
+                        const m = (d.name||'').match(/^([A-ZÅÄÖ])/i); return m? m[1].toUpperCase(): null;
+                    }).filter(Boolean);
+                    const startLetter = nextAlphabetLetter(existingLetters);
+                    const html = `
+                        <div style="padding:8px;">
+                          <h3>Luo useita rappuja</h3>
+                          <label>Alkukirjain:</label>
+                          <input id="rapuStartLetter" type="text" value="${startLetter}" maxlength="1" style="width:40px;"> 
+                          <label style="margin-left:8px;">Määrä:</label>
+                          <input id="rapuCount" type="number" value="2" min="1" max="26" style="width:80px;">
+                          <div style="margin-top:10px;">
+                            <button class="btn btn-primary" onclick="confirmCreateRaput()">Luo</button>
+                            <button class="btn btn-secondary" onclick="closeModal()">Peruuta</button>
+                          </div>
+                        </div>`;
+                    openModal(html);
+                }
+
+                function getFinnishAlphabet(){
+                    // Finnish alphabet order: A..Z, Å, Ä, Ö
+                    const base = Array.from({length:26}, (_,i)=>String.fromCharCode('A'.charCodeAt(0)+i));
+                    return base.concat(['Å','Ä','Ö']);
+                }
+                function nextAlphabetLetter(letters){
+                    const alph = getFinnishAlphabet();
+                    const arr = (letters||[]).filter(Boolean).map(l=>l.toUpperCase()).sort((a,b)=>alph.indexOf(a)-alph.indexOf(b));
+                    if(arr.length===0) return 'A';
+                    const last = arr[arr.length-1];
+                    const idx = alph.indexOf(last);
+                    return alph[(idx>=0 && idx<alph.length-1) ? idx+1 : 0];
+                }
+
+                function confirmCreateRaput(){
+                    const p = getCurrentProject();
+                    const start = (document.getElementById('rapuStartLetter').value||'A').toUpperCase();
+                    const count = Math.max(1, parseInt(document.getElementById('rapuCount').value||'1'));
+                    const alph = getFinnishAlphabet();
+                    let idx = alph.indexOf(start); if(idx<0) idx = 0;
+                    for(let i=0;i<count;i++){
+                        const letter = alph[(idx + i) % alph.length];
+                        const name = `${letter} Rappu Poisto`;
+                        // Skip if exists (roof extract with same letter)
+                        if((p.ducts||[]).some(d=> (d.group==='roof' && d.type==='extract') && ((d.name||'').toUpperCase().startsWith(letter)))){
+                            continue;
+                        }
+                        const newDuct = { id: genId(), group:'roof', type:'extract', name, size:160, flow:0, valves:[] };
+                        p.ducts = p.ducts || []; p.ducts.push(newDuct);
+                    }
+                    saveProjects(); closeModal(); renderVisualContent();
+                }
+
+                function renameRappu(ductId){
+                    const p = getCurrentProject();
+                    const d = (p.ducts||[]).find(x=>x.id===ductId);
+                    if(!d){ return; }
+                    const current = d.name||'';
+                    const html = `
+                        <div style="padding:8px;">
+                          <h3>Nimeä rappu uudelleen</h3>
+                          <label>Uusi nimi:</label>
+                          <input id="rapuNewName" type="text" value="${current}" style="width:260px;">
+                          <div style="margin-top:10px;">
+                            <button class="btn btn-primary" onclick="confirmRenameRappu('${ductId}')">Tallenna</button>
+                            <button class="btn btn-secondary" onclick="closeModal()">Peruuta</button>
+                          </div>
+                        </div>`;
+                    openModal(html);
+                }
+
+                function confirmRenameRappu(ductId){
+                    const p = getCurrentProject();
+                    const d = (p.ducts||[]).find(x=>x.id===ductId);
+                    if(!d){ closeModal(); return; }
+                    const val = (document.getElementById('rapuNewName').value||'').trim();
+                    if(val){ d.name = val; saveProjects(); }
+                    closeModal(); renderVisualContent();
+                }
+
+                function openCopyRappuModal(preselectDst){
+                    const p = projects.find(x => x.id === activeProjectId); if(!p) return;
+                    const ovId = 'copy-rappu-modal';
+                    let ov = document.getElementById(ovId);
+                    if(!ov){ ov = document.createElement('div'); ov.id = ovId; ov.className = 'modal-overlay'; document.body.appendChild(ov); }
+                    const roofDucts = (p.ducts||[]).filter(d=>d.group==='roof' && d.type==='extract');
+                    const rappuLetters = Array.from(new Set(roofDucts.map(d=> (d.name||'').trim().charAt(0).toUpperCase()).filter(Boolean))).sort();
+                    const letterOpts = rappuLetters.length? rappuLetters.map(l=>`<option value="${l}">${l}</option>`).join('') : '<option value="">-</option>';
+                    ov.innerHTML = `
+                        <div class="modal">
+                            <div class="modal-header">Kopioi rappujen tiedot</div>
+                            <div class="modal-content">
+                                <div class="valve-edit-row">
+                                    <label>Kopioi rappu
+                                        <select id="copySrcRappu" class="input input-sm w-120">${letterOpts}</select>
+                                    </label>
+                                    <label>Kohderappu
+                                        <select id="copyDstRappu" class="input input-sm w-120">${letterOpts}</select>
+                                    </label>
+                                </div>
+                            </div>
+                            <div class="modal-actions">
+                                <button class="btn btn-primary" onclick="confirmCopyRappu()">Kopioi</button>
+                                <button class="btn" onclick="closeCopyRappuModal()">Peruuta</button>
+                            </div>
+                        </div>`;
+                    ov.style.display = 'flex';
+                    // Esivalitse kohderappu seuraavaksi kirjaimeksi
+                    try{ if(preselectDst){ const dstSel = document.getElementById('copyDstRappu'); if(dstSel) dstSel.value = preselectDst; } }catch(e){}
+                }
+                function closeCopyRappuModal(){ const el=document.getElementById('copy-rappu-modal'); if(el){ el.style.display='none'; el.innerHTML=''; } }
+                function confirmCopyRappu(){
+                    const p = projects.find(x => x.id === activeProjectId); if(!p) return;
+                    const src = (document.getElementById('copySrcRappu')?.value||'').toUpperCase();
+                    const floor = parseInt(document.getElementById('aptFloor')?.value||'1');
+                    const count = Math.max(1, parseInt(document.getElementById('aptCount')?.value||'1'));
+                    const ductSrc = ducts.find(d=> (d.group==='roof' && d.type==='extract') && (d.name||'').toUpperCase().startsWith(src));
+                    let ductDst = ducts.find(d=> (d.group==='roof' && d.type==='extract') && (d.name||'').toUpperCase().startsWith(dst));
+                    if(!ductDst){ const id = Date.now(); ducts.push({ id, name: `${dst} Rappu Poisto`, type:'extract', group:'roof', size:160, flow:0 }); ductDst = ducts.find(d=>d.id===id); }
+                    if(!ductSrc || !ductDst){ alert('Rappua ei löytynyt. Lisää rungot ensin.'); return; }
+                    for(let i=1; i<=count; i++){
+                        const apt = `${rap}${floor}${i}`;
+                        p.valves.push({ id: genId(), parentDuctId: duct.id, apartment: apt, room: 'Asunto', flow: 0, target: 0 });
+                        p.meta.floorMap[apt] = floor;
+                    }
                     // Manual per-duct order support with fallback to sort key
                     ensureValveOrder(p, duct.id, valves);
                     const order = (p.meta && p.meta.valveOrder && p.meta.valveOrder[duct.id]) || [];
@@ -1342,7 +2115,7 @@ function setApartmentFloorPrompt(p, apt) {
                     const paMax = paValues.length ? Math.max(...paValues).toFixed(1) : '-';
 
                     // Render taps along one horizontal pipe, evenly spaced side-by-side
-                    const count = Math.max(1, valves.length);
+                    const valveCount = Math.max(1, valves.length);
                     // Näytä vaakanäkymässä vain rungolle lisätyt venttiilit (ei kerrostaloasuntojen)
                     const valvesHTML = valves.filter(v => v.parentDuctId === duct.id && !v.apartment).map((v, i) => {
                         const idx = p.valves.indexOf(v);
@@ -1354,7 +2127,7 @@ function setApartmentFloorPrompt(p, apt) {
                         const hasMeasurement = target>0 && flow>0;
                         const diff = Math.abs(flow - target);
                         const status = !hasMeasurement ? 'none' : (diff/target < 0.10 ? 'ok' : 'err');
-                        const leftPct = ((i+1)/(count+1))*100;
+                        const leftPct = ((i+1)/(valveCount+1))*100;
                         return `<div class="tap ${status}" style="left:${leftPct}%" onclick="event.stopPropagation();openValvePanel(${idx})">
                                     <div class="tap-label">
                                         <b>${room}</b> • ${flow.toFixed(1)} l/s${target?` / ${target}`:''}${pa!=='-'?` • ${pa} Pa`:''}${pos!=='-'?` • Avaus ${Math.round(pos)}`:''}
@@ -1371,9 +2144,11 @@ function setApartmentFloorPrompt(p, apt) {
                             <span class="branch-connector" style="background:${grad};"></span>
                             <h4 style="color:${colorHex}; cursor:pointer;" onclick="event.stopPropagation();editDuctInline(${duct.id})">
                                 ${duct.name} <span style="font-weight:normal; color:#888;">(${duct.size})</span>
-                                <span style="margin-left:8px; font-weight:normal; color:#666;">Σ mitattu: ${(duct.flow||0).toFixed ? (duct.flow||0).toFixed(1) : (parseFloat(duct.flow)||0).toFixed(1)} l/s</span>
+                                <span style="margin-left:8px; font-weight:normal; color:#666;">= mitattu: ${(duct.flow||0).toFixed ? (duct.flow||0).toFixed(1) : (parseFloat(duct.flow)||0).toFixed(1)} l/s</span>
                                 <button class="list-action-btn" title="Poista runko" style="float:right; font-size:14px; color:#bbb;" onclick="event.stopPropagation();deleteDuctFromVisual(${duct.id}, event)">🗑️</button>
                                 <button class="list-action-btn" title="Lisää venttiili tähän runkoon" style="float:right; font-size:14px; color:${colorHex}; margin-right:8px;" onclick="event.stopPropagation();quickAddValveToDuct(${duct.id})">+ Lisää venttiili</button>
+                                <button class="list-action-btn" title="Lisää asunto (massa)" style="float:right; font-size:14px; color:${colorHex}; margin-right:8px;" onclick="event.stopPropagation();openAddApartmentModal()">+ Lisää asunto</button>
+                                <button class="list-action-btn" title="Nimeä runko uudelleen" style="float:right; font-size:14px; color:#666; margin-right:8px;" onclick="event.stopPropagation();renameRappu(${duct.id})">✏️ Nimeä uudelleen</button>
                             </h4>
                             ${window._editingDuctId===duct.id?`
                             <div class="duct-edit-box" style="background:#fafafa; border:1px solid #ddd; border-radius:6px; padding:10px; margin:6px 0 10px 0;">
@@ -1389,7 +2164,7 @@ function setApartmentFloorPrompt(p, apt) {
                                     <button class="list-action-btn" style="background:#eee; color:#444; padding:6px 10px; border-radius:4px;" onclick="event.stopPropagation();cancelDuctInline()">Peruuta</button>
                                 </div>
                             </div>`:''}
-                            <div class="branch-summary">Σ l/s: ${sumFlow} • Pa: ${paMin}…${paMax} • Venttiilejä: ${valves.length}</div>
+                            <div class="branch-summary">= l/s: ${sumFlow} • Pa: ${paMin}…${paMax} • Venttiilejä: ${valves.length}</div>
                             ${valves.filter(v => v.parentDuctId === duct.id && !v.apartment).length?`<div class=\"branch-pipe\" style=\"background:${colorName==='blue'?'#64b5f6':'#f48fb1'};\">${valvesHTML}</div>`:'<span style="font-size:10px; color:#ccc;">Tyhjä</span>'}
                         </div>`;
                 }
@@ -1685,6 +2460,7 @@ function showAddValve() {
     const table = document.getElementById('valveReferenceTable'); if(table) table.style.display = 'none';
     editingValveIndex = null;
     populateDuctSelect();
+    populateRappuSelect();
     showView('view-measure');
 }
 
@@ -1711,13 +2487,13 @@ function openAptFloorDialog(ductId){
     const ovId = 'apt-floor-modal-overlay';
     let ov = document.getElementById(ovId);
     if(!ov){ ov = document.createElement('div'); ov.id = ovId; ov.className = 'modal-overlay'; document.body.appendChild(ov); }
-    // Rappulista: kaikki roof-ryhmän extract-rungot (ensimmäinen kirjain nimiin)
     const roofDucts = (p.ducts||[]).filter(d=>d.group==='roof' && d.type==='extract');
     const rappuLetters = Array.from(new Set(roofDucts.map(d=> (d.name||'').trim().charAt(0).toUpperCase()).filter(x=>x))).sort();
     const rappuOpts = rappuLetters.length ? rappuLetters.map(l=>`<option value="${l}">${l}</option>`).join('') : '<option value="">-</option>';
-    // Kerroslista: 1..10 (voi laajentaa myöhemmin asetuksilla)
     const floors = Array.from({length:10}, (_,i)=>i+1);
     const floorOpts = floors.map(f=>`<option value="${f}">${f}</option>`).join('');
+    const aptCountOpts = [1,2,3,4,5,6,8,10].map(n=>`<option value="${n}">${n}</option>`).join('');
+    const valvesPerAptOpts = [1,2,3,4].map(n=>`<option value="${n}">${n}</option>`).join('');
     ov.innerHTML = `
         <div class="modal">
             <div class="modal-header">Lisää venttiili — valitse rappu ja kerros</div>
@@ -1731,6 +2507,16 @@ function openAptFloorDialog(ductId){
                     </label>
                     <label>Asunto (tunnus)
                         <input id="selApt" type="text" placeholder="Esim. A1" class="input input-text input-sm w-140">
+                    </label>
+                </div>
+                <hr style="border:1px solid #eee; margin:10px 0;">
+                <div style="font-weight:bold; margin-bottom:6px;">Massalisäys</div>
+                <div class="valve-edit-row">
+                    <label>Asuntoja yhteensä
+                        <select id="selAptCount" class="input input-sm w-120">${aptCountOpts}</select>
+                    </label>
+                    <label>Venttiilejä / asunto
+                        <select id="selValvesPerApt" class="input input-sm w-140">${valvesPerAptOpts}</select>
                     </label>
                 </div>
             </div>
@@ -1754,6 +2540,10 @@ function confirmAptFloor(ductId){
     // Tallenna kerroskarttaan
     const num = parseInt(floorStr,10);
     if(!isNaN(num) && apt){ if(!p.meta) p.meta={}; if(!p.meta.floorMap) p.meta.floorMap={}; p.meta.floorMap[apt]=num; try{ saveData(); }catch(e){} }
+    // Tallenna massalisäyksen asetukset sessioon myöhempää käyttöä varten
+    const aptCount = parseInt(document.getElementById('selAptCount')?.value||'1',10) || 1;
+    const valvesPerApt = parseInt(document.getElementById('selValvesPerApt')?.value||'1',10) || 1;
+    try { sessionStorage.setItem('roofBatchSettings', JSON.stringify({ ductId, rappu, floor:num, aptBase:apt, aptCount, valvesPerApt })); } catch(e) {}
     closeAptFloorDialog();
 }
 
@@ -2061,12 +2851,19 @@ function createDemoAHU(){
     p.ducts.push({ id: supId, type: 'supply', name: 'Tulo', size: 160, group:'ahu' });
     p.ducts.push({ id: extId, type: 'extract', name: 'Poisto', size: 160, group:'ahu' });
     p.machines.push({ type:'ahu', name:'IV-Kone', supPct:50, extPct:50 });
-    // AHU venttiilit (rungolle suoraan)
-    p.valves.push({ room:'Olohuone', type:'fresh125', target:30, flow:28, pos:3, measuredP:25, parentDuctId: supId });
-    p.valves.push({ room:'Makuuhuone', type:'fresh100', target:15, flow:14, pos:2, measuredP:20, parentDuctId: supId });
-    p.valves.push({ room:'Keittiö', type:'h_kso125', target:25, flow:24, pos:2, measuredP:30, parentDuctId: extId });
-    p.valves.push({ room:'WC', type:'h_kso100', target:10, flow:9.5, pos:2, measuredP:18, parentDuctId: extId });
-    projects.push(p); saveData(); renderProjects(); alert('Demo AHU luotu');
+    // AHU venttiilit (rungolle suoraan), vähintään 4 per haara, eri avauksilla ja paineilla
+    const rnd = (base)=> Number((base + (Math.random()*3.0 - 1.5)).toFixed(1)); // ±1.5 l/s
+    const rpos = ()=> Math.round(15 + Math.random()*70); // 15-85%
+    const rpa = ()=> Number((18 + Math.random()*90).toFixed(0)); // 18-108 Pa
+    p.valves.push({ room:'Olohuone', type:'fresh125', target:30, flow:rnd(30), pos:rpos(), measuredP:rpa(), parentDuctId: supId });
+    p.valves.push({ room:'Makuuhuone', type:'fresh100', target:15, flow:rnd(15), pos:rpos(), measuredP:rpa(), parentDuctId: supId });
+    p.valves.push({ room:'Työhuone', type:'c_dinoa', target:12, flow:rnd(12), pos:rpos(), measuredP:rpa(), parentDuctId: supId });
+    p.valves.push({ room:'Keittiö', type:'c_clik125', target:18, flow:rnd(18), pos:rpos(), measuredP:rpa(), parentDuctId: supId });
+    p.valves.push({ room:'WC', type:'h_kso100', target:10, flow:rnd(10), pos:rpos(), measuredP:rpa(), parentDuctId: extId });
+    p.valves.push({ room:'KPH', type:'h_kso125', target:20, flow:rnd(20), pos:rpos(), measuredP:rpa(), parentDuctId: extId });
+    p.valves.push({ room:'Keittiö', type:'c_elo100', target:14, flow:rnd(14), pos:rpos(), measuredP:rpa(), parentDuctId: extId });
+    p.valves.push({ room:'Siivous', type:'l_ksu125', target:8, flow:rnd(8), pos:rpos(), measuredP:rpa(), parentDuctId: extId });
+    projects.push(p); saveData(); renderProjects(); activeProjectId = p.id; if (typeof openProject === 'function') openProject(p.id); else { try { window.openProject(p.id); } catch(e) {} } alert('Demo AHU luotu');
 }
 
 // Erillinen Huippuimuri-demo
@@ -2074,11 +2871,15 @@ function createDemoRoof(){
     const p = { id: Date.now(), name: 'Demo Huippuimuri', systemType: 'roof', ducts: [], valves: [], machines: [], meta: {} };
     const extId = Date.now()+3;
     p.ducts.push({ id: extId, type: 'extract', name: 'A-Rappu Poisto', size: 160, group:'roof' });
-    // Tornille muutama venttiili (asuntokohtaiset näkyvät pystynäkymässä)
-    p.valves.push({ apartment:'A1', room:'Keittiö', type:'h_kso125', target:25, flow:24, pos:2, measuredP:30, parentDuctId: extId });
-    p.valves.push({ apartment:'A2', room:'KPH', type:'h_kso100', target:15, flow:14, pos:3, measuredP:28, parentDuctId: extId });
-    p.valves.push({ apartment:'A3', room:'WC', type:'h_kso100', target:10, flow:9, pos:2, measuredP:22, parentDuctId: extId });
-    projects.push(p); saveData(); renderProjects(); alert('Demo Huippuimuri luotu');
+    // Tornille vähintään 4 venttiiliä, eri avauksilla ja paineilla
+    const rndR = (base)=> Number((base + (Math.random()*2.0 - 1.0)).toFixed(1));
+    const rposR = ()=> Math.round(10 + Math.random()*80);
+    const rpaR = ()=> Number((20 + Math.random()*90).toFixed(0));
+    p.valves.push({ apartment:'A1', room:'Keittiö', type:'h_kso125', target:25, flow:rndR(25), pos:rposR(), measuredP:rpaR(), parentDuctId: extId });
+    p.valves.push({ apartment:'A2', room:'KPH', type:'h_kso100', target:15, flow:rndR(15), pos:rposR(), measuredP:rpaR(), parentDuctId: extId });
+    p.valves.push({ apartment:'A3', room:'WC', type:'h_kso100', target:10, flow:rndR(10), pos:rposR(), measuredP:rpaR(), parentDuctId: extId });
+    p.valves.push({ apartment:'A4', room:'Siivous', type:'l_ksu125', target:12, flow:rndR(12), pos:rposR(), measuredP:rpaR(), parentDuctId: extId });
+    projects.push(p); saveData(); renderProjects(); activeProjectId = p.id; if (typeof openProject === 'function') openProject(p.id); else { try { window.openProject(p.id); } catch(e) {} } alert('Demo Huippuimuri luotu');
 }
 
 // Tulosta AHU-pöytäkirja
@@ -2117,15 +2918,30 @@ function createDemoHybrid(){
     p.ducts.push({ id: roofExtId, type: 'extract', name: 'A-Rappu Poisto', size: 160, group:'roof' });
     // Kone
     p.machines.push({ type:'ahu', name:'IV-Kone', supPct:50, extPct:50 });
-    // AHU rungolle venttiileitä
-    p.valves.push({ room:'Olohuone', type:'fresh125', target:30, flow:28, pos:3, measuredP:25, parentDuctId: supId });
-    p.valves.push({ room:'Makuuhuone', type:'fresh100', target:15, flow:14, pos:2, measuredP:20, parentDuctId: supId });
-    p.valves.push({ room:'Keittiö', type:'h_kso125', target:25, flow:24, pos:2, measuredP:30, parentDuctId: extAhuId });
-    // Huippuimuriin asuntojen venttiileitä (näkyvät pystynäkymässä)
-    p.valves.push({ apartment:'A1', room:'KPH', type:'h_kso100', target:15, flow:14, pos:3, measuredP:28, parentDuctId: roofExtId });
-    p.valves.push({ apartment:'A2', room:'WC', type:'h_kso100', target:10, flow:9, pos:2, measuredP:22, parentDuctId: roofExtId });
-    projects.push(p); saveData(); renderProjects(); alert('Demo Hybridi luotu');
+    // AHU rungolle venttiileitä (vähintään 4 per haara), eri avauksilla ja paineilla
+    const rndH = (base)=> Number((base + (Math.random()*3.0 - 1.5)).toFixed(1));
+    const rposH = ()=> Math.round(15 + Math.random()*70);
+    const rpaH = ()=> Number((18 + Math.random()*90).toFixed(0));
+    p.valves.push({ room:'Olohuone', type:'fresh125', target:30, flow:rndH(30), pos:rposH(), measuredP:rpaH(), parentDuctId: supId });
+    p.valves.push({ room:'Makuuhuone', type:'fresh100', target:15, flow:rndH(15), pos:rposH(), measuredP:rpaH(), parentDuctId: supId });
+    p.valves.push({ room:'Työhuone', type:'c_dinoa', target:12, flow:rndH(12), pos:rposH(), measuredP:rpaH(), parentDuctId: supId });
+    p.valves.push({ room:'Keittiö', type:'c_clik125', target:18, flow:rndH(18), pos:rposH(), measuredP:rpaH(), parentDuctId: supId });
+    p.valves.push({ room:'WC', type:'h_kso100', target:10, flow:rndH(10), pos:rposH(), measuredP:rpaH(), parentDuctId: extAhuId });
+    p.valves.push({ room:'KPH', type:'h_kso125', target:20, flow:rndH(20), pos:rposH(), measuredP:rpaH(), parentDuctId: extAhuId });
+    // Huippuimuriin asuntojen venttiileitä (näkyvät pystynäkymässä), vähintään 4
+    const rndHR = (base)=> Number((base + (Math.random()*2.0 - 1.0)).toFixed(1));
+    const rposHR = ()=> Math.round(10 + Math.random()*80);
+    const rpaHR = ()=> Number((20 + Math.random()*90).toFixed(0));
+    p.valves.push({ apartment:'A1', room:'KPH', type:'h_kso100', target:15, flow:rndHR(15), pos:rposHR(), measuredP:rpaHR(), parentDuctId: roofExtId });
+    p.valves.push({ apartment:'A2', room:'WC', type:'h_kso100', target:10, flow:rndHR(10), pos:rposHR(), measuredP:rpaHR(), parentDuctId: roofExtId });
+    p.valves.push({ apartment:'A3', room:'Keittiö', type:'h_kso125', target:20, flow:rndHR(20), pos:rposHR(), measuredP:rpaHR(), parentDuctId: roofExtId });
+    p.valves.push({ apartment:'A4', room:'Siivous', type:'l_ksu125', target:12, flow:rndHR(12), pos:rposHR(), measuredP:rpaHR(), parentDuctId: roofExtId });
+    projects.push(p); saveData(); renderProjects(); activeProjectId = p.id; if (typeof openProject === 'function') openProject(p.id); else { try { window.openProject(p.id); } catch(e) {} } alert('Demo Hybridi luotu');
 }
+// Altista demofunktiot globaalisti index.html onclick-kutsuille
+window.createDemoAHU = createDemoAHU;
+window.createDemoRoof = createDemoRoof;
+window.createDemoHybrid = createDemoHybrid;
 
 // Näytä pöytäkirja: Tulo/Poisto (ruudulla)
 function showReportSupplyExtract(){
@@ -2215,3 +3031,56 @@ function clearSignature(){
     const c = document.getElementById('signaturePad');
     if(!c) return; const ctx = c.getContext('2d'); ctx.clearRect(0,0,c.width,c.height);
 }
+
+// Täyttää rappu-valinnan
+function populateRappuSelect(){
+    const p = projects.find(x => x.id === activeProjectId);
+    const sel = document.getElementById('rappuSelect'); if(!sel) return;
+    sel.innerHTML = '';
+    const roofDucts = (p?.ducts||[]).filter(d=>d.group==='roof' && d.type==='extract');
+    const letters = Array.from(new Set(roofDucts.map(d=> (d.name||'').trim().charAt(0).toUpperCase()).filter(Boolean))).sort();
+    if(letters.length===0){ sel.innerHTML = '<option value="">-</option>'; return; }
+    letters.forEach(l=>{ const opt=document.createElement('option'); opt.value=l; opt.textContent=l; sel.appendChild(opt); });
+}
+
+// Lisää asunto -modal
+function openAddApartmentModal(){
+    const p = projects.find(x => x.id === activeProjectId);
+    const rappuSel = document.getElementById('aptModalRappu');
+    const kerrosSel = document.getElementById('aptModalKerros');
+    const modal = document.getElementById('addApartmentModal');
+    if(!rappuSel || !kerrosSel || !modal) return;
+    // Rappu kirjaimet roof-rungoista
+    const roofDucts = (p?.ducts||[]).filter(d=>d.group==='roof' && d.type==='extract');
+    const letters = Array.from(new Set(roofDucts.map(d=> (d.name||'').trim().charAt(0).toUpperCase()).filter(Boolean))).sort();
+    rappuSel.innerHTML = letters.length? letters.map(l=>`<option value="${l}">${l}</option>`).join('') : '<option value="">-</option>';
+    // Kerros 1..20
+    kerrosSel.innerHTML = Array.from({length:20},(_,i)=>`<option value="${i+1}">${i+1}</option>`).join('');
+    modal.style.display = 'flex';
+}
+function closeAddApartmentModal(){ const m=document.getElementById('addApartmentModal'); if(m){ m.style.display='none'; } }
+function confirmAddApartments(){
+    const p = projects.find(x => x.id === activeProjectId); if(!p) return;
+    const rappu = (document.getElementById('aptModalRappu')?.value||'').trim().toUpperCase();
+    const floorStr = document.getElementById('aptModalKerros')?.value||'';
+    const count = parseInt(document.getElementById('aptModalCount')?.value||'1',10)||1;
+    const perRappu = parseInt(document.getElementById('aptModalPerRappu')?.value||'1',10)||1;
+    if(!p.meta) p.meta={}; if(!p.meta.floorMap) p.meta.floorMap={};
+    let created = 0; let aptNum = 1;
+    while(created < count){
+        const aptId = `${rappu}${aptNum}`;
+        const floor = parseInt(floorStr,10);
+        if(!isNaN(floor)) p.meta.floorMap[aptId]=floor;
+        // Luodaan placeholder-venttiilit määrällä perRappu (vain apartment-tunnus, käyttäjä valitsee mallin mittauslomakkeella)
+        for(let i=0;i<perRappu;i++){
+            (p.valves|| (p.valves=[])).push({ apartment: aptId, room: '', type: '', target: 0, flow: 0, pos: null, measuredP: null, parentDuctId: null });
+        }
+        created++; aptNum++;
+    }
+    try{ saveData(); }catch(e){}
+    closeAddApartmentModal();
+    renderDetailsList();
+}
+
+// Varmista, että funktio on globaalisti saatavilla onclick-kutsuille
+window.showVisual = showVisual;

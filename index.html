@@ -8,6 +8,14 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.5.31/jspdf.plugin.autotable.min.js"></script>
 
+    <script>
+        // Safe wrappers to avoid ReferenceErrors before script.js initializes
+        function safeCreateDemoAHU(){ if (typeof window.createDemoAHU === 'function') { return window.createDemoAHU(); } alert('Demo AHU -funktio ei ole vielä ladattu.'); }
+        function safeCreateDemoRoof(){ if (typeof window.createDemoRoof === 'function') { return window.createDemoRoof(); } alert('Demo Huippuimuri -funktio ei ole vielä ladattu.'); }
+        function safeCreateDemoHybrid(){ if (typeof window.createDemoHybrid === 'function') { return window.createDemoHybrid(); } alert('Demo Hybridi -funktio ei ole vielä ladattu.'); }
+        function safeShowVisual(){ if (typeof window.showVisual === 'function') { return window.showVisual(); } alert('Visualisointi ei ole vielä ladattu.'); }
+    </script>
+
     <link rel="stylesheet" href="style.css">
 </head>
 <body>
@@ -20,9 +28,10 @@
     <div class="view active" id="view-projects">
         <div style="padding: 20px;">
             <button class="btn btn-primary" onclick="showNewProjectModal()">+ Uusi projekti</button>
-            <button class="btn btn-demo" onclick="createDemoRoof()">📋 Lataa demo: Huippuimuri</button>
-            <button class="btn btn-demo" onclick="createDemoAHU()">📋 Lataa demo: Tulo/Poisto</button>
-            <button class="btn btn-demo" onclick="createDemoHybrid()">📋 Lataa demo: Hybridi</button>
+            <button class="btn btn-demo" onclick="safeCreateDemoRoof()">📋 Lataa demo: Huippuimuri</button>
+            <button class="btn btn-demo" onclick="safeCreateDemoAHU()">📋 Lataa demo: Tulo/Poisto</button>
+            <button class="btn btn-demo" onclick="safeCreateDemoHybrid()">📋 Lataa demo: Hybridi</button>
+                <button class="btn btn-demo" onclick="(window.createDemoTuloPoisto?createDemoTuloPoisto():alert('Demo ei ole vielä ladattu'))">📋 Lataa demo: Tulo/Poisto (kerrostalo)</button>
             <div id="noProjectsMsg" style="text-align: center; color: #999; margin-top: 40px;">Ei projekteja. Luo uusi!</div>
             <div id="projectsList"></div>
         </div>
@@ -41,6 +50,7 @@
                 <button class="btn btn-secondary" onclick="showReportRoof()" style="width:auto; padding:8px 12px;">📄 Näytä pöytäkirja: Huippuimuri</button>
                 <button class="btn btn-secondary" onclick="printReportAHU()" style="width:auto; padding:8px 12px;">🖨️ Tulosta Tulo/Poisto</button>
                 <button class="btn btn-secondary" onclick="printReportRoof()" style="width:auto; padding:8px 12px;">📄 Tulosta Huippuimuri</button>
+                    <button class="btn btn-secondary" onclick="(window.showChart?showChart():alert('Kaavion näyttö ei ole vielä käytettävissä'))" style="width:auto; padding:8px 12px;">📈 Näytä kaavio</button>
                 <button class="btn btn-secondary" onclick="showSettings()" style="width:auto; padding:8px 12px;">⚙️ Asetukset</button>
             </div>
             <div class="mode-selector" id="modeSelector">
@@ -158,6 +168,8 @@
             <div style="display:flex; gap:10px; align-items:center; margin-bottom:10px; background:#f0f8ff; padding:5px; border-radius:4px;">
                 <label style="margin:0; font-weight:bold; min-width:60px;">Asunto:</label>
                 <input type="text" id="apartmentName" placeholder="Esim. A1" style="margin:0; flex:1;">
+                <label style="margin:0; font-weight:bold; min-width:60px;">Rappu:</label>
+                <select id="rappuSelect" style="margin:0; width:90px;"></select>
             </div>
             <label>Huone / Nimi</label>
             <input type="text" id="roomName" placeholder="esim. Olohuone">
@@ -200,6 +212,42 @@
             <button class="btn btn-secondary" onclick="calculateAndSave(true)" style="margin-top: 10px;">Tallenna & Seuraava</button>
             <button class="btn btn-danger" id="btnDeleteValve" style="margin-top: 10px; display: none;" onclick="deleteValve()">Poista venttiili</button>
             <div id="calcResult" style="display: none; margin-top: 15px; background: #e8f4fd; padding: 15px; border-radius: 8px;"></div>
+            <div style="margin-top:15px; display:flex; gap:8px;">
+                <button class="btn btn-secondary" onclick="openAddApartmentModal()">Lisää asunto</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- ADD APARTMENT MODAL -->
+    <div class="modal-overlay" id="addApartmentModal" style="display:none;">
+        <div class="modal">
+            <div class="modal-header">Lisää asuntoja</div>
+            <div class="modal-content">
+                <div class="valve-edit-row">
+                    <label>Rappu
+                        <select id="aptModalRappu" class="input input-sm w-120"></select>
+                    </label>
+                    <label>Kerros
+                        <select id="aptModalKerros" class="input input-sm w-120"></select>
+                    </label>
+                </div>
+                <div class="valve-edit-row">
+                    <label>Määrä (asunnot)
+                        <select id="aptModalCount" class="input input-sm w-120">
+                            <option>1</option><option>2</option><option>3</option><option>4</option><option>5</option><option>6</option><option>8</option><option>10</option>
+                        </select>
+                    </label>
+                    <label>Määrä per rappu
+                        <select id="aptModalPerRappu" class="input input-sm w-140">
+                            <option>1</option><option>2</option><option>3</option><option>4</option>
+                        </select>
+                    </label>
+                </div>
+            </div>
+            <div class="modal-actions">
+                <button class="btn btn-primary" onclick="confirmAddApartments()">Luo</button>
+                <button class="btn" onclick="closeAddApartmentModal()">Peruuta</button>
+            </div>
         </div>
     </div>
 
@@ -321,7 +369,7 @@
         </div>
     </div>
 
-    <button class="fab" onclick="showVisual()">📊</button>
+    <button class="fab" onclick="safeShowVisual()">📊</button>
     <div id="newProjectModal" class="modal-overlay">
         <div class="modal-box">
             <h3>Uusi projekti</h3>
@@ -334,6 +382,7 @@
                 <option value="ahu">🏠 IV-Kone (Tulo & Poisto)</option>
                 <option value="roof">💨 Huippuimuri (Vain Poisto)</option>
                 <option value="hybrid">🔄 Molemmat / Hybridi</option>
+                <option value="kerrostalo">🏢 Kerrostalo (AHU per asunto)</option>
             </select>
             
             <div style="display:flex; gap:10px; margin-top:20px;">
